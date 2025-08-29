@@ -1,5 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 import whisper
 import tempfile
 import os
@@ -46,9 +48,26 @@ def get_model():
         logger.info(f"DEPLOYMENT: Model device: {getattr(model, 'device', 'unknown')}")
     return model
 
+# Serve static files
 @app.get("/")
 async def root():
-    logger.info("Root endpoint accessed")
+    """Serve the main transcription interface"""
+    return FileResponse('transcription-prototype/index.html')
+
+@app.get("/script.js")
+async def script():
+    """Serve the JavaScript file"""
+    return FileResponse('transcription-prototype/script.js')
+
+@app.get("/favicon.ico")
+async def favicon():
+    """Serve favicon to prevent 404s"""
+    return {"message": "No favicon"}
+
+@app.get("/api/status")
+async def api_status():
+    """API status endpoint"""
+    logger.info("API status endpoint accessed")
     return {"message": "Comedy Transcription API", "status": "running"}
 
 @app.post("/api/transcribe")
