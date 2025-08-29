@@ -126,50 +126,46 @@ async def root():
     </div>
 
     <script>
-        // Preload the model when page loads
         async function preloadModel() {
             try {
-                const response = await fetch('/api/preload-model', { method: 'POST' });
+                const response = await fetch("/api/preload-model", { method: "POST" });
                 if (response.ok) {
-                    console.log('Model preloaded successfully');
+                    console.log("Model preloaded successfully");
                 }
             } catch (error) {
-                console.log('Model preload failed (this is normal for first request):', error);
+                console.log("Model preload failed (this is normal for first request):", error);
             }
         }
 
-        // Preload model on page load
         preloadModel();
 
-        document.getElementById('audioFile').addEventListener('change', async function(event) {
+        document.getElementById("audioFile").addEventListener("change", async function(event) {
             const file = event.target.files[0];
             if (!file) return;
             
-            const resultDiv = document.getElementById('result');
-            resultDiv.className = 'result loading';
-            resultDiv.textContent = 'Transcribing audio... This may take a minute for the first request.';
+            const resultDiv = document.getElementById("result");
+            resultDiv.className = "result loading";
+            resultDiv.textContent = "Transcribing audio... This may take a minute for the first request.";
             
             const formData = new FormData();
-            formData.append('file', file);
+            formData.append("file", file);
             
             try {
-                const response = await fetch('/api/transcribe', {
-                    method: 'POST',
+                const response = await fetch("/api/transcribe", {
+                    method: "POST",
                     body: formData
                 });
                 
                 if (!response.ok) {
                     const errorText = await response.text();
-                    let errorMessage = `HTTP error! status: ${response.status}`;
+                    let errorMessage = "HTTP error! status: " + response.status;
                     
-                    // Try to parse JSON error details
                     try {
                         const errorJson = JSON.parse(errorText);
                         if (errorJson.detail) {
                             errorMessage = errorJson.detail;
                         }
                     } catch (e) {
-                        // If not JSON, use the raw text
                         if (errorText && errorText.trim()) {
                             errorMessage = errorText.trim();
                         }
@@ -179,18 +175,17 @@ async def root():
                 }
                 
                 const result = await response.json();
-                resultDiv.className = 'result';
-                resultDiv.textContent = result.transcription || 'No transcription available';
+                resultDiv.className = "result";
+                resultDiv.textContent = result.transcription || "No transcription available";
                 
             } catch (error) {
-                resultDiv.className = 'result error';
-                resultDiv.textContent = `Error: ${error.message}`;
+                resultDiv.className = "result error";
+                resultDiv.textContent = "Error: " + error.message;
                 
-                // Show helpful tips for common errors
-                if (error.message.includes('503') || error.message.includes('unavailable')) {
-                    resultDiv.textContent += '\n\n💡 Tip: This usually means the transcription service is starting up. Please wait a minute and try again.';
-                } else if (error.message.includes('500')) {
-                    resultDiv.textContent += '\n\n💡 Tip: Try with a shorter audio file or different audio format.';
+                if (error.message.includes("503") || error.message.includes("unavailable")) {
+                    resultDiv.textContent += "\n\nTip: This usually means the transcription service is starting up. Please wait a minute and try again.";
+                } else if (error.message.includes("500")) {
+                    resultDiv.textContent += "\n\nTip: Try with a shorter audio file or different audio format.";
                 }
             }
         });
