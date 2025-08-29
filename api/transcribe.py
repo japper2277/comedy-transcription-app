@@ -1,7 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import HTMLResponse
 import whisper
 import tempfile
 import os
@@ -52,12 +51,98 @@ def get_model():
 @app.get("/")
 async def root():
     """Serve the main transcription interface"""
-    return FileResponse('transcription-prototype/index.html')
+    html_content = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Comedy Transcription Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+        }
+        .upload-area {
+            border: 2px dashed #ccc;
+            border-radius: 10px;
+            padding: 40px;
+            text-align: center;
+            margin: 20px 0;
+        }
+        .upload-area:hover {
+            border-color: #999;
+        }
+        .result {
+            margin-top: 30px;
+            padding: 20px;
+            background: #f5f5f5;
+            border-radius: 5px;
+            white-space: pre-wrap;
+            min-height: 100px;
+        }
+        .loading {
+            text-align: center;
+            font-style: italic;
+            color: #666;
+        }
+        .error {
+            color: red;
+            background: #ffe6e6;
+        }
+    </style>
+</head>
+<body>
+    <h1>🎤 Comedy Transcription Test</h1>
+    <p>Upload an audio file of your comedy material to see it transcribed instantly using OpenAI Whisper.</p>
+    
+    <div class="upload-area">
+        <input type="file" id="audioFile" accept="audio/*" />
+        <p>Choose an audio file (MP3, WAV, M4A, etc.)</p>
+    </div>
+    
+    <div id="result" class="result">
+        <p>Your transcription will appear here...</p>
+    </div>
 
-@app.get("/script.js")
-async def script():
-    """Serve the JavaScript file"""
-    return FileResponse('transcription-prototype/script.js')
+    <script>
+        document.getElementById('audioFile').addEventListener('change', async function(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            
+            const resultDiv = document.getElementById('result');
+            resultDiv.className = 'result loading';
+            resultDiv.textContent = 'Transcribing audio... This may take a minute.';
+            
+            const formData = new FormData();
+            formData.append('file', file);
+            
+            try {
+                const response = await fetch('/api/transcribe', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const result = await response.json();
+                resultDiv.className = 'result';
+                resultDiv.textContent = result.transcription || 'No transcription available';
+                
+            } catch (error) {
+                resultDiv.className = 'result error';
+                resultDiv.textContent = `Error: ${error.message}`;
+            }
+        });
+    </script>
+</body>
+</html>
+    """
+    return HTMLResponse(content=html_content)
 
 @app.get("/favicon.ico")
 async def favicon():
