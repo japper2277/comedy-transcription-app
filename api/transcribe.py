@@ -9,6 +9,7 @@ import sys
 import time
 import asyncio
 import gc
+import psutil
 
 # Configure logging
 logging.basicConfig(
