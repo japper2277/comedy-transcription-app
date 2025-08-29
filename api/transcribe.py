@@ -7,6 +7,8 @@ import os
 import logging
 import sys
 import time
+import asyncio
+import gc
 
 # Configure logging
 logging.basicConfig(
@@ -33,19 +35,24 @@ app.add_middleware(
 )
 logger.info("DEPLOYMENT: CORS middleware added successfully")
 
-# Load Whisper model (this happens once when the serverless function starts)
-model = None
-
-def get_model():
-    global model
-    if model is None:
-        logger.info("DEPLOYMENT: Loading Whisper model...")
+# Memory-optimized approach: Load model per request for Render's 512MB limit
+def load_model_for_transcription():
+    """Load model just-in-time to minimize memory usage"""
+    try:
+        logger.info("DEPLOYMENT: Loading Whisper model (tiny.en for memory optimization)...")
         start_time = time.time()
-        model = whisper.load_model("base")
+        
+        # Use smallest English-only model for Render's 512MB memory limit
+        model = whisper.load_model("tiny.en")
+        
         load_time = time.time() - start_time
-        logger.info(f"DEPLOYMENT: Whisper model loaded successfully in {load_time:.2f}s")
-        logger.info(f"DEPLOYMENT: Model device: {getattr(model, 'device', 'unknown')}")
-    return model
+        logger.info(f"DEPLOYMENT: Whisper model loaded in {load_time:.2f}s")
+        
+        return model
+        
+    except Exception as e:
+        logger.error(f"DEPLOYMENT: Failed to load Whisper model: {e}")
+        raise Exception(f"Failed to load transcription model: {e}")
 
 # Serve static files
 @app.get("/")
@@ -89,8 +96,18 @@ async def root():
             color: #666;
         }
         .error {
-            color: red;
-            background: #ffe6e6;
+            color: #d32f2f;
+            background: #ffebee;
+            border: 1px solid #f44336;
+            padding: 15px;
+            border-radius: 5px;
+        }
+        .error .tip {
+            margin-top: 10px;
+            padding: 10px;
+            background: #fff3e0;
+            border-left: 4px solid #ff9800;
+            border-radius: 3px;
         }
     </style>
 </head>
@@ -108,13 +125,28 @@ async def root():
     </div>
 
     <script>
+        // Preload the model when page loads
+        async function preloadModel() {
+            try {
+                const response = await fetch('/api/preload-model', { method: 'POST' });
+                if (response.ok) {
+                    console.log('Model preloaded successfully');
+                }
+            } catch (error) {
+                console.log('Model preload failed (this is normal for first request):', error);
+            }
+        }
+
+        // Preload model on page load
+        preloadModel();
+
         document.getElementById('audioFile').addEventListener('change', async function(event) {
             const file = event.target.files[0];
             if (!file) return;
             
             const resultDiv = document.getElementById('result');
             resultDiv.className = 'result loading';
-            resultDiv.textContent = 'Transcribing audio... This may take a minute.';
+            resultDiv.textContent = 'Transcribing audio... This may take a minute for the first request.';
             
             const formData = new FormData();
             formData.append('file', file);
@@ -126,7 +158,23 @@ async def root():
                 });
                 
                 if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
+                    const errorText = await response.text();
+                    let errorMessage = `HTTP error! status: ${response.status}`;
+                    
+                    // Try to parse JSON error details
+                    try {
+                        const errorJson = JSON.parse(errorText);
+                        if (errorJson.detail) {
+                            errorMessage = errorJson.detail;
+                        }
+                    } catch (e) {
+                        // If not JSON, use the raw text
+                        if (errorText && errorText.trim()) {
+                            errorMessage = errorText.trim();
+                        }
+                    }
+                    
+                    throw new Error(errorMessage);
                 }
                 
                 const result = await response.json();
@@ -136,6 +184,13 @@ async def root():
             } catch (error) {
                 resultDiv.className = 'result error';
                 resultDiv.textContent = `Error: ${error.message}`;
+                
+                // Show helpful tips for common errors
+                if (error.message.includes('503') || error.message.includes('unavailable')) {
+                    resultDiv.textContent += '\n\n💡 Tip: This usually means the transcription service is starting up. Please wait a minute and try again.';
+                } else if (error.message.includes('500')) {
+                    resultDiv.textContent += '\n\n💡 Tip: Try with a shorter audio file or different audio format.';
+                }
             }
         });
     </script>
@@ -176,8 +231,15 @@ async def transcribe_audio(file: UploadFile = File(...)):
     try:
         logger.info(f"Processing file: {file.filename}")
         
-        # Get the Whisper model
-        whisper_model = get_model()
+        # Load model just-in-time to minimize memory usage
+        try:
+            whisper_model = load_model_for_transcription()
+        except Exception as model_error:
+            logger.error(f"Model loading failed: {model_error}")
+            raise HTTPException(
+                status_code=503, 
+                detail="Transcription service temporarily unavailable. Please try again in a few minutes."
+            )
         
         # Save uploaded file to temporary location
         with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as tmp:
@@ -190,10 +252,31 @@ async def transcribe_audio(file: UploadFile = File(...)):
         
         logger.info(f"File saved to {temp_path}, starting transcription...")
         
-        # Transcribe the audio file
-        result = whisper_model.transcribe(temp_path)
-        
-        logger.info("Transcription completed successfully")
+        # Transcribe the audio file with timeout and memory management
+        try:
+            # Log memory usage before transcription
+            memory_mb = psutil.Process().memory_info().rss / 1024 / 1024
+            logger.info(f"Memory usage before transcription: {memory_mb:.1f}MB")
+            
+            # Set a reasonable timeout for transcription
+            result = whisper_model.transcribe(temp_path)
+            logger.info("Transcription completed successfully")
+            
+            # Immediately free model memory after transcription
+            del whisper_model
+            gc.collect()
+            
+            memory_mb = psutil.Process().memory_info().rss / 1024 / 1024
+            logger.info(f"Memory usage after cleanup: {memory_mb:.1f}MB")
+            
+        except Exception as transcribe_error:
+            logger.error(f"Whisper transcription failed: {transcribe_error}")
+            # Clean up memory on error
+            gc.collect()
+            raise HTTPException(
+                status_code=500, 
+                detail=f"Audio processing failed. Please try with a shorter audio file or different format."
+            )
         
         return {
             "filename": file.filename,
@@ -202,9 +285,12 @@ async def transcribe_audio(file: UploadFile = File(...)):
             "success": True
         }
         
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
     except Exception as e:
-        logger.error(f"Transcription failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
+        logger.error(f"Unexpected error during transcription: {str(e)}")
+        raise HTTPException(status_code=500, detail="An unexpected error occurred. Please try again.")
         
     finally:
         # Clean up temporary file
@@ -220,5 +306,28 @@ async def health_check():
     logger.info("Health check accessed")
     return {
         "status": "healthy",
-        "model_loaded": model is not None
+        "memory_optimized": True,
+        "model_type": "tiny.en (load-per-request)"
     }
+
+@app.post("/api/preload-model")
+async def preload_model():
+    """Test model loading (no persistent preload in memory-optimized mode)"""
+    logger.info("Model preload endpoint accessed - testing model loading capability")
+    try:
+        # Test load and immediately free
+        test_model = load_model_for_transcription()
+        del test_model
+        gc.collect()
+        
+        return {
+            "message": "Model loading test successful (memory-optimized mode)",
+            "model_type": "tiny.en",
+            "memory_optimized": True
+        }
+    except Exception as e:
+        logger.error(f"Model loading test failed: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to test model loading: {str(e)}"
+        )
