@@ -183,9 +183,9 @@ async def root():
                 resultDiv.textContent = "Error: " + error.message;
                 
                 if (error.message.includes("503") || error.message.includes("unavailable")) {
-                    resultDiv.textContent += "\n\nTip: This usually means the transcription service is starting up. Please wait a minute and try again.";
+                    resultDiv.textContent += "\\n\\nTip: This usually means the transcription service is starting up. Please wait a minute and try again.";
                 } else if (error.message.includes("500")) {
-                    resultDiv.textContent += "\n\nTip: Try with a shorter audio file or different audio format.";
+                    resultDiv.textContent += "\\n\\nTip: Try with a shorter audio file or different audio format.";
                 }
             }
         });
