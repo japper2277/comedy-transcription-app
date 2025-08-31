@@ -3,48 +3,32 @@
     "rules": "firestore.rules",
     "indexes": "firestore.indexes.json"
   },
-  "hosting": [
-    {
-      "site": "mic-calendar-landing",
-      "public": "landing/dist",
-      "ignore": [
-        "firebase.json",
-        "**/.*",
-        "**/node_modules/**"
-      ],
-      "cleanUrls": true,
-      "trailingSlash": false,
-      "rewrites": [
-        {
-          "source": "**",
-          "destination": "/index.html"
-        }
-      ]
-    },
-    {
-      "site": "mic-calendar-app",
-      "public": "dist",
-      "ignore": [
-        "firebase.json",
-        "**/.*",
-        "**/node_modules/**"
-      ],
-      "rewrites": [
-        {
-          "source": "/signup",
-          "destination": "/react-demo.html?signup=true"
-        },
-        {
-          "source": "/setlist/**",
-          "destination": "/react-demo.html"
-        },
-        {
-          "source": "**",
-          "destination": "/set_list_Calendar.html"
-        }
-      ]
-    }
-  ],
+  "hosting": {
+    "public": "dist",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "rewrites": [
+      {
+        "source": "/react-demo.html",
+        "destination": "/react-demo.html"
+      },
+      {
+        "source": "/signup",
+        "destination": "/react-demo.html?signup=true"
+      },
+      {
+        "source": "/setlist/**",
+        "destination": "/react-demo.html"
+      },
+      {
+        "source": "**",
+        "destination": "/react-demo.html"
+      }
+    ]
+  },
   "emulators": {
     "auth": {
       "port": 9099

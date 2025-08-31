@@ -49,6 +49,48 @@ A comprehensive comedy management platform featuring AI transcription, joke inde
 
 ## 🚀 Quick Start
 
+### Launching the Unified Drag System React Demo
+
+The unified drag system setlist builder is available as a pre-built React demo. Here's how to launch it:
+
+#### Method 1: Using Pre-built Assets (Recommended)
+
+```bash
+# Navigate to the dist folder and start HTTP server
+cd dist
+python -m http.server 3003
+```
+
+Then open: **http://localhost:3003/react-demo.html?unified=true**
+
+#### Method 2: Development Server (If npm dependencies work)
+
+```bash
+npm install
+npm run dev
+```
+
+Then open: **http://localhost:3003/react-demo.html?unified=true**
+
+#### Troubleshooting
+
+**Memory Issues During npm install:**
+If you encounter "JavaScript heap out of memory" errors during `npm install`, use Method 1 with the pre-built assets. This avoids the memory-intensive dependency installation while still providing the full React demo experience.
+
+**Missing Files Errors:**
+- If you see 404 errors for `main.jsx` or `vite.svg`, ensure you're running the server from the `dist/` folder
+- The pre-built version includes all necessary bundled assets in `dist/assets/`
+
+### Alternative Demos
+
+If the React demo doesn't work, these HTML versions are also available:
+
+- **Main Calendar with Setlist Builder**: `http://localhost:3003/set_list_Calendar.html`
+- **Standalone Setlist Builder**: `http://localhost:3003/setlist_builder.html`
+- **Collaborative Demo**: `http://localhost:3003/collaborative-demo.html`
+
+## 🚀 Quick Start
+
 ### Option 1: Demo Mode (Instant)
 ```bash
 git clone [repository-url]

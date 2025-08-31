@@ -6,16 +6,16 @@
     <title>Collaborative Setlist Builder - React Demo</title>
     <meta name="description" content="A real-time collaborative joke and setlist management application with Firebase backend">
     
-    <!-- Favicon -->
-    <link rel="icon" type="image/svg+xml" href="./vite.svg" />
+    <!-- Favicon --> 
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" /> 
     
     <!-- PWA Manifest -->
-    <link rel="mianifest" href="./manifest.json" />
-    <meta name="theme-color" content="#1DB954" />
+    <link rel="mianifest" href="/manifest.json" /> 
+    <meta name="theme-color" content="#1DB954" /> 
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Setlist Builder" />
-    <link rel="apple-touch-icon" href="./vite.svg" />
+    <link rel="apple-touch-icon" href="/vite.svg" />
     
     <!-- Optimized Font Loading Strategy -->
     <!-- Preconnect to font origins for faster DNS resolution -->
@@ -30,7 +30,7 @@
     >
     
     <!-- Font Awesome with proper async loading -->
-    <link 
+    <link  
       rel="preload" 
       href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" 
       as="style" 
@@ -173,54 +173,6 @@
             }
         }
     </style>
-  <script>window.ENV_CONFIG = {
-  "NODE_ENV": "production",
-  "VERSION": "2.0.0",
-  "API_BASE_URL": "https://api.micfinderapp.com",
-  "CSV_DATA_URL": "./coordinates.csv",
-  "FEEDBACK_EMAIL": "support@micfinderapp.com",
-  "FEATURES": {
-    "ONBOARDING": true,
-    "MIC_FINDER": true,
-    "STATS_CHARTS": true,
-    "SETLIST_BUILDER": true,
-    "DATA_EXPORT": true,
-    "KEYBOARD_SHORTCUTS": true,
-    "COLLABORATION": true,
-    "OFFLINE_MODE": false,
-    "ANALYTICS": false,
-    "PUSH_NOTIFICATIONS": false
-  },
-  "PERFORMANCE": {
-    "CHART_ANIMATION_DURATION": 750,
-    "NOTIFICATION_DURATION": 3000,
-    "DEBOUNCE_DELAY": 300,
-    "MAX_EVENTS_PER_DAY": 10,
-    "MAX_SAVED_SETLISTS": 50
-  },
-  "UI": {
-    "DEFAULT_VIEW": "week",
-    "DEFAULT_THEME": "dark",
-    "MOBILE_BREAKPOINT": 768,
-    "MODAL_ANIMATION_DURATION": 200
-  },
-  "DATA": {
-    "AUTO_SAVE": true,
-    "BACKUP_FREQUENCY": 86400000,
-    "MAX_STORAGE_SIZE": 5242880
-  },
-  "DEBUG": {
-    "ENABLED": true,
-    "LOG_LEVEL": "info",
-    "SHOW_PERFORMANCE_METRICS": false,
-    "MOCK_API_DELAY": 500
-  }
-};</script>
-  <script type="module" crossorigin src="./assets/demo-CJ2RTy02.js"></script>
-  <link rel="modulepreload" crossorigin href="./assets/preload-helper-lMf9uHy8.js">
-  <link rel="modulepreload" crossorigin href="./assets/react-vendor-BcJlhpn5.js">
-  <link rel="modulepreload" crossorigin href="./assets/firebase-DvgH0Bk_.js">
-  <link rel="stylesheet" crossorigin href="./css/demo-BGAJRJqX.css">
 </head>
 <body>
     <!-- Demo notification bar -->
@@ -247,6 +199,7 @@
 
     <!-- Error handling is now properly managed by React ErrorBoundary components -->
 
-    <!-- Load the React demo -->
+    <!-- Load the React demo -->
+    <script type="module" src="/src/main.jsx"></script>
 </body>
 </html>
