@@ -18,10 +18,9 @@ logger = logging.getLogger(__name__)
 # Create FastAPI app
 app = FastAPI(title="Comedy Transcription API")
 
-# Load Whisper model
-logger.info("Loading Whisper tiny model...")
-model = whisper.load_model("tiny")
-logger.info("Whisper model loaded successfully")
+# Whisper model will be loaded on demand to save memory
+model = None
+logger.info("Whisper model will be loaded on demand")
 
 # Load Gemini API key from environment variables
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -301,14 +300,33 @@ async def root():
             <h1>🎤 Comedy Transcription & AI Analysis</h1>
             <p>Upload an audio file to transcribe with Whisper AI and optionally analyze with Gemini Flash 2.0</p>
             
-            <div class="upload-area">
-                <input type="file" id="audioFile" accept="audio/*" />
+            <!-- Data Processing Consent -->
+            <div class="consent-container" style="background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 8px; padding: 20px; margin: 20px 0;">
+                <h3 style="margin-top: 0; color: #856404;">🔒 Data Processing Consent</h3>
+                <div style="font-size: 14px; line-height: 1.5; margin-bottom: 15px;">
+                    <p><strong>Before uploading your audio:</strong></p>
+                    <ul style="margin-left: 20px;">
+                        <li>Your audio is processed locally using Whisper AI for transcription</li>
+                        <li>If you enable AI analysis, only the TEXT transcript is sent to Google Gemini</li>
+                        <li>Audio files are automatically deleted after processing</li>
+                        <li>All transfers use encrypted connections (HTTPS)</li>
+                    </ul>
+                    <p style="margin-bottom: 0;"><small><a href="#" onclick="showPrivacyDetails()" style="color: #007bff;">View detailed privacy information</a></small></p>
+                </div>
+                <div class="checkbox-container" style="background: none; border: none; padding: 0; margin: 0;">
+                    <label style="font-weight: 600;"><input type="checkbox" id="consentCheckbox" required /> I consent to audio processing as described above</label>
+                </div>
+            </div>
+
+            <div class="upload-area" id="uploadArea" style="opacity: 0.5; pointer-events: none;">
+                <input type="file" id="audioFile" accept="audio/*" disabled />
                 <p>Choose an audio file (MP3, WAV, M4A, etc.)</p>
                 <p><small>📏 Maximum file size: 50MB | Recommended: Under 5 minutes for best results</small></p>
+                <p><small style="color: #666;">Please provide consent above to enable file upload</small></p>
             </div>
             
-            <div class="checkbox-container">
-                <label><input type="checkbox" id="enableGemini" /> Enable Gemini AI Analysis</label>
+            <div class="checkbox-container" id="geminiContainer" style="opacity: 0.5; pointer-events: none;">
+                <label><input type="checkbox" id="enableGemini" disabled /> Enable Gemini AI Analysis</label>
             </div>
             
             <div id="geminiOptions" class="gemini-options" style="display: none;">
@@ -335,6 +353,62 @@ async def root():
     </div>
 
     <script>
+        // Consent management
+        document.getElementById('consentCheckbox').addEventListener('change', function() {
+            const uploadArea = document.getElementById('uploadArea');
+            const audioFile = document.getElementById('audioFile');
+            const geminiContainer = document.getElementById('geminiContainer');
+            const enableGemini = document.getElementById('enableGemini');
+            
+            if (this.checked) {
+                // Enable upload when consent is given
+                uploadArea.style.opacity = '1';
+                uploadArea.style.pointerEvents = 'auto';
+                audioFile.disabled = false;
+                geminiContainer.style.opacity = '1';
+                geminiContainer.style.pointerEvents = 'auto';
+                enableGemini.disabled = false;
+            } else {
+                // Disable upload when consent is withdrawn
+                uploadArea.style.opacity = '0.5';
+                uploadArea.style.pointerEvents = 'none';
+                audioFile.disabled = true;
+                audioFile.value = ''; // Clear any selected file
+                geminiContainer.style.opacity = '0.5';
+                geminiContainer.style.pointerEvents = 'none';
+                enableGemini.disabled = true;
+                enableGemini.checked = false;
+                document.getElementById('geminiOptions').style.display = 'none';
+            }
+        });
+
+        // Privacy details modal
+        function showPrivacyDetails() {
+            alert(`DETAILED PRIVACY INFORMATION
+
+Data Processing:
+• Audio files are processed locally using OpenAI Whisper technology
+• Audio files are temporarily stored and automatically deleted after transcription
+• No audio data is sent to external services for transcription
+
+Optional AI Analysis:
+• If enabled, only TEXT transcripts are sent to Google Gemini API
+• Google processes text for comedy analysis and set list matching  
+• Text processing follows Google's privacy policy and data retention rules
+
+Your Rights:
+• You can request deletion of any stored data
+• You can withdraw consent at any time
+• You maintain all rights to your original content
+
+Security:
+• All data transfers use HTTPS encryption
+• No long-term storage of audio or transcript data
+• Access is limited to essential processing only
+
+Contact: For privacy questions or data deletion requests, contact support.`);
+        }
+
         // Toggle Gemini options visibility
         document.getElementById('enableGemini').addEventListener('change', function() {
             const geminiOptions = document.getElementById('geminiOptions');
@@ -449,6 +523,12 @@ async def transcribe_audio(
         
         # Transcribe with Whisper
         try:
+            global model
+            if model is None:
+                logger.info("Loading Whisper tiny model...")
+                model = whisper.load_model("tiny")
+                logger.info("Whisper model loaded successfully")
+            
             whisper_result = model.transcribe(temp_file_path)
             transcript_text = whisper_result["text"].strip()
         except Exception as whisper_error:
@@ -508,7 +588,7 @@ async def transcribe_audio(
             
         raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
 
-@app.get("/api/prompt")
+@app.get("/api/prompt")     
 async def get_default_prompt():
     """Get the current default prompt template"""
     return {"prompt": DEFAULT_PROMPT_TEMPLATE}
@@ -520,3 +600,4 @@ async def update_default_prompt(new_prompt: str = Form(...)):
     DEFAULT_PROMPT_TEMPLATE = new_prompt
     logger.info("Default prompt template updated")
     return {"message": "Prompt updated successfully", "prompt": DEFAULT_PROMPT_TEMPLATE}
+    
