@@ -1,59 +1,121 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.responses import HTMLResponse
+import logging
 import whisper
 import tempfile
 import os
-import logging
-import sys
-import time
-import asyncio
-import gc
-import psutil
+import requests
+import json
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Create FastAPI app
-logger.info("DEPLOYMENT: Starting FastAPI app initialization...")
 app = FastAPI(title="Comedy Transcription API")
-logger.info("DEPLOYMENT: FastAPI app initialized successfully")
-logger.info(f"DEPLOYMENT: Running on Python {sys.version}")
-logger.info(f"DEPLOYMENT: Working directory: {os.getcwd()}")
 
-# Add CORS middleware
-logger.info("DEPLOYMENT: Adding CORS middleware...")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["GET", "POST"],
-    allow_headers=["*"],
-)
-logger.info("DEPLOYMENT: CORS middleware added successfully")
+# Load Whisper model
+logger.info("Loading Whisper tiny model...")
+model = whisper.load_model("tiny")
+logger.info("Whisper model loaded successfully")
 
-# Memory-optimized approach: Load model per request for Render's 512MB limit
-def load_model_for_transcription():
-    """Load model just-in-time to minimize memory usage"""
+# Load Gemini API key from environment variables
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+if not GEMINI_API_KEY:
+    logger.error("GEMINI_API_KEY not found in environment variables!")
+    raise ValueError("Please set GEMINI_API_KEY in your .env file")
+# Gemini API endpoint configuration
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+
+# Default prompt template - easily customizable
+DEFAULT_PROMPT_TEMPLATE = """You are a professional comedy show organizer. Analyze this transcript and perform the following tasks:
+
+1. Match COMPLETE segments of the transcript to these bits from the provided set list:
+{set_list_text}
+Label these matched segments as '**Joke: [Matched Set List Title]**'.
+
+2. Identify any other COMPLETE structured comedy bits in the transcript that aren't in the set list, and for each one, generate a concise descriptive title (3–5 words) based on its content, then label the segment as '**NEW BIT: [Descriptive Title]**'.
+
+3. For any short, unrelated comments or brief audience interactions that are not part of a structured joke or new bit, label them as '**Riff**'.
+
+CRITICAL LABELING RULES:
+- Label ENTIRE comedy bits from setup to punchline - do NOT cut jokes in the middle
+- When you identify a joke or bit, include the COMPLETE segment including setup, development, and punchline
+- Place labels at the very beginning of each complete segment
+- Do NOT break up or interrupt the flow of individual jokes with multiple labels
+
+Formatting Requirements:
+- IMPORTANT: You MUST return the *entire original transcript text* with your labels inserted directly before the relevant segments.
+- Do NOT alter or remove any part of the original transcript text itself.
+- Maintain the original sequence of the transcript.
+- Add line breaks for better readability - break long paragraphs into shorter, readable chunks
+- Do not add any introductory or concluding remarks, only the labeled transcript.
+
+Transcript to analyze:
+{transcript}"""
+
+def format_transcript_for_display(transcript: str) -> str:
+    """Format transcript for better readability"""
+    # Add breaks after sentences and clean up spacing
+    import re
+    
+    # Replace multiple spaces with single spaces
+    formatted = re.sub(r' +', ' ', transcript)
+    
+    # Add line breaks after sentences (but not interrupting mid-word)
+    formatted = re.sub(r'([.!?])\s+', r'\1\n\n', formatted)
+    
+    # Add breaks after longer phrases without punctuation
+    formatted = re.sub(r'([^.!?]{100,}?)\s+', r'\1\n', formatted)
+    
+    return formatted.strip()
+
+async def analyze_with_gemini(transcript: str, set_list: str = "", custom_prompt: str = ""):
+    """Analyze transcript using Gemini Flash 2.0"""
     try:
-        logger.info("DEPLOYMENT: Loading Whisper model (tiny.en for memory optimization)...")
-        start_time = time.time()
+        # Use custom prompt if provided, otherwise use default
+        prompt_template = custom_prompt if custom_prompt.strip() else DEFAULT_PROMPT_TEMPLATE
         
-        # Use smallest English-only model for Render's 512MB memory limit
-        model = whisper.load_model("tiny.en")
+        # Format the prompt
+        set_list_text = set_list if set_list.strip() else "No set list provided."
+        full_prompt = prompt_template.format(set_list_text=set_list_text, transcript=transcript)
         
-        load_time = time.time() - start_time
-        logger.info(f"DEPLOYMENT: Whisper model loaded in {load_time:.2f}s")
+        # Prepare Gemini API request
+        headers = {
+            "Content-Type": "application/json"
+        }
         
-        return model
+        payload = {
+            "contents": [{
+                "parts": [{
+                    "text": full_prompt
+                }]
+            }]
+        }
         
+        # Make API call to Gemini
+        response = requests.post(
+            f"{GEMINI_API_URL}?key={GEMINI_API_KEY}",
+            headers=headers,
+            json=payload,
+            timeout=60
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            analysis = result["candidates"][0]["content"]["parts"][0]["text"]
+            return {"success": True, "analysis": analysis}
+        else:
+            logger.error(f"Gemini API error: {response.status_code} - {response.text}")
+            return {"success": False, "error": f"API Error: {response.status_code}"}
+            
     except Exception as e:
-        logger.error(f"DEPLOYMENT: Failed to load Whisper model: {e}")
-        raise Exception(f"Failed to load transcription model: {e}")
+        logger.error(f"Gemini analysis error: {str(e)}")
+        return {"success": False, "error": str(e)}
 
 # Serve static files
 @app.get("/")
@@ -68,125 +130,271 @@ async def root():
     <title>Comedy Transcription Test</title>
     <style>
         body {
-            font-family: Arial, sans-serif;
-            max-width: 800px;
-            margin: 50px auto;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            max-width: 1000px;
+            margin: 20px auto;
             padding: 20px;
+            line-height: 1.5;
+            color: #333;
         }
+        
+        .container {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 20px;
+        }
+        
+        @media (min-width: 768px) {
+            .container {
+                grid-template-columns: 1fr 1fr;
+            }
+        }
+        
+        .upload-section {
+            grid-column: 1 / -1;
+        }
+        
         .upload-area {
-            border: 2px dashed #ccc;
-            border-radius: 10px;
-            padding: 40px;
+            border: 2px dashed #ddd;
+            border-radius: 12px;
+            padding: 30px;
             text-align: center;
             margin: 20px 0;
+            transition: border-color 0.2s ease;
+            background: #fafafa;
         }
+        
         .upload-area:hover {
-            border-color: #999;
+            border-color: #4CAF50;
+            background: #f5f9f5;
         }
+        
         .result {
-            margin-top: 30px;
-            padding: 20px;
-            background: #f5f5f5;
-            border-radius: 5px;
+            margin-top: 20px;
+            padding: 24px;
+            background: #fff;
+            border-radius: 12px;
+            border: 1px solid #e0e0e0;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            min-height: 120px;
+            
+            /* Critical text formatting fixes */
+            word-wrap: break-word;
+            word-break: break-word;
+            overflow-wrap: break-word;
             white-space: pre-wrap;
-            min-height: 100px;
+            line-height: 1.7;
+            font-size: 14px;
+            
+            /* Prevent horizontal overflow */
+            width: 100%;
+            max-width: 100%;
+            overflow-x: hidden;
+            box-sizing: border-box;
         }
+        
+        .result h3 {
+            margin-top: 0;
+            margin-bottom: 16px;
+            color: #2c3e50;
+            border-bottom: 2px solid #eee;
+            padding-bottom: 8px;
+        }
+        
+        .result pre {
+            margin: 0;
+            font-family: inherit;
+            font-size: inherit;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            word-break: break-word;
+            overflow-wrap: break-word;
+        }
+        
+        .analysis-content {
+            max-height: 600px;
+            overflow-y: auto;
+            padding-right: 10px;
+        }
+        
+        .analysis-content::-webkit-scrollbar {
+            width: 6px;
+        }
+        
+        .analysis-content::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 3px;
+        }
+        
+        .analysis-content::-webkit-scrollbar-thumb {
+            background: #c1c1c1;
+            border-radius: 3px;
+        }
+        
         .loading {
             text-align: center;
             font-style: italic;
             color: #666;
+            padding: 40px;
         }
+        
         .error {
             color: #d32f2f;
             background: #ffebee;
             border: 1px solid #f44336;
-            padding: 15px;
-            border-radius: 5px;
         }
-        .error .tip {
-            margin-top: 10px;
-            padding: 10px;
-            background: #fff3e0;
-            border-left: 4px solid #ff9800;
-            border-radius: 3px;
+        
+        .gemini-options {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 12px;
+            margin: 15px 0;
+            border: 1px solid #dee2e6;
+        }
+        
+        .gemini-options h3 {
+            margin-top: 0;
+            color: #495057;
+        }
+        
+        textarea {
+            width: 100%;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 12px;
+            font-family: inherit;
+            font-size: 14px;
+            resize: vertical;
+            box-sizing: border-box;
+        }
+        
+        textarea:focus {
+            outline: none;
+            border-color: #4CAF50;
+            box-shadow: 0 0 0 2px rgba(76, 175, 80, 0.2);
+        }
+        
+        .checkbox-container {
+            margin: 20px 0;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border: 1px solid #dee2e6;
+        }
+        
+        .checkbox-container label {
+            display: flex;
+            align-items: center;
+            cursor: pointer;
+            font-weight: 500;
+        }
+        
+        .checkbox-container input[type="checkbox"] {
+            margin-right: 10px;
+            transform: scale(1.2);
         }
     </style>
 </head>
 <body>
-    <h1>🎤 Comedy Transcription Test</h1>
-    <p>Upload an audio file of your comedy material to see it transcribed instantly using OpenAI Whisper.</p>
-    
-    <div class="upload-area">
-        <input type="file" id="audioFile" accept="audio/*" />
-        <p>Choose an audio file (MP3, WAV, M4A, etc.)</p>
-    </div>
-    
-    <div id="result" class="result">
-        <p>Your transcription will appear here...</p>
+    <div class="container">
+        <div class="upload-section">
+            <h1>🎤 Comedy Transcription & AI Analysis</h1>
+            <p>Upload an audio file to transcribe with Whisper AI and optionally analyze with Gemini Flash 2.0</p>
+            
+            <div class="upload-area">
+                <input type="file" id="audioFile" accept="audio/*" />
+                <p>Choose an audio file (MP3, WAV, M4A, etc.)</p>
+                <p><small>📏 Maximum file size: 50MB | Recommended: Under 5 minutes for best results</small></p>
+            </div>
+            
+            <div class="checkbox-container">
+                <label><input type="checkbox" id="enableGemini" /> Enable Gemini AI Analysis</label>
+            </div>
+            
+            <div id="geminiOptions" class="gemini-options" style="display: none;">
+                <h3>📝 Analysis Options</h3>
+                <div style="margin-bottom: 15px;">
+                    <label for="setList">Set List (optional):</label><br>
+                    <textarea id="setList" placeholder="Paste your set list here..." rows="3"></textarea>
+                </div>
+                <div>
+                    <label for="customPrompt">Custom Prompt (optional - leave blank to use default):</label><br>
+                    <textarea id="customPrompt" placeholder="Enter custom analysis prompt..." rows="4"></textarea>
+                </div>
+            </div>
+        </div>
+        
+        <div id="result" class="result">
+            <p>Your transcription will appear here...</p>
+        </div>
+        
+        <div id="analysis" class="result" style="display: none;">
+            <h3>🧠 Gemini AI Analysis</h3>
+            <div id="analysisContent" class="analysis-content"></div>
+        </div>
     </div>
 
     <script>
-        async function preloadModel() {
-            try {
-                const response = await fetch("/api/preload-model", { method: "POST" });
-                if (response.ok) {
-                    console.log("Model preloaded successfully");
-                }
-            } catch (error) {
-                console.log("Model preload failed (this is normal for first request):", error);
-            }
-        }
+        // Toggle Gemini options visibility
+        document.getElementById('enableGemini').addEventListener('change', function() {
+            const geminiOptions = document.getElementById('geminiOptions');
+            geminiOptions.style.display = this.checked ? 'block' : 'none';
+        });
 
-        preloadModel();
-
-        document.getElementById("audioFile").addEventListener("change", async function(event) {
+        document.getElementById('audioFile').addEventListener('change', async function(event) {
             const file = event.target.files[0];
             if (!file) return;
             
-            const resultDiv = document.getElementById("result");
-            resultDiv.className = "result loading";
-            resultDiv.textContent = "Transcribing audio... This may take a minute for the first request.";
+            const resultDiv = document.getElementById('result');
+            const analysisDiv = document.getElementById('analysis');
+            const analysisContent = document.getElementById('analysisContent');
+            
+            // Hide analysis section initially
+            analysisDiv.style.display = 'none';
+            
+            resultDiv.className = 'result loading';
+            resultDiv.textContent = 'Transcribing audio... This may take a minute.';
             
             const formData = new FormData();
-            formData.append("file", file);
+            formData.append('file', file);
+            
+            // Add Gemini analysis options if enabled
+            const enableGemini = document.getElementById('enableGemini').checked;
+            if (enableGemini) {
+                formData.append('enable_analysis', 'true');
+                formData.append('set_list', document.getElementById('setList').value);
+                formData.append('custom_prompt', document.getElementById('customPrompt').value);
+            }
             
             try {
-                const response = await fetch("/api/transcribe", {
-                    method: "POST",
+                const response = await fetch('/api/transcribe', {
+                    method: 'POST',
                     body: formData
                 });
                 
                 if (!response.ok) {
-                    const errorText = await response.text();
-                    let errorMessage = "HTTP error! status: " + response.status;
-                    
-                    try {
-                        const errorJson = JSON.parse(errorText);
-                        if (errorJson.detail) {
-                            errorMessage = errorJson.detail;
-                        }
-                    } catch (e) {
-                        if (errorText && errorText.trim()) {
-                            errorMessage = errorText.trim();
-                        }
-                    }
-                    
-                    throw new Error(errorMessage);
+                    throw new Error(`HTTP error! status: ${response.status}`);
                 }
                 
                 const result = await response.json();
-                resultDiv.className = "result";
-                resultDiv.textContent = result.transcription || "No transcription available";
+                
+                // Display transcription
+                resultDiv.className = 'result';
+                resultDiv.innerHTML = `<h3>📝 Transcription</h3><pre>${result.transcription || 'No transcription available'}</pre>`;
+                
+                // Display analysis if available
+                if (result.analysis) {
+                    analysisDiv.style.display = 'block';
+                    if (result.analysis.success) {
+                        analysisContent.innerHTML = `<pre>${result.analysis.analysis}</pre>`;
+                    } else {
+                        analysisContent.innerHTML = `<p class="error">Analysis failed: ${result.analysis.error}</p>`;
+                    }
+                }
                 
             } catch (error) {
-                resultDiv.className = "result error";
-                resultDiv.textContent = "Error: " + error.message;
-                
-                if (error.message.includes("503") || error.message.includes("unavailable")) {
-                    resultDiv.textContent += "\\n\\nTip: This usually means the transcription service is starting up. Please wait a minute and try again.";
-                } else if (error.message.includes("500")) {
-                    resultDiv.textContent += "\\n\\nTip: Try with a shorter audio file or different audio format.";
-                }
+                resultDiv.className = 'result error';
+                resultDiv.textContent = `Error: ${error.message}`;
             }
         });
     </script>
@@ -207,123 +415,108 @@ async def api_status():
     return {"message": "Comedy Transcription API", "status": "running"}
 
 @app.post("/api/transcribe")
-async def transcribe_audio(file: UploadFile = File(...)):
-    logger.info("Transcribe endpoint accessed")
+async def transcribe_audio(
+    file: UploadFile = File(...),
+    enable_analysis: str = Form("false"),
+    set_list: str = Form(""),
+    custom_prompt: str = Form("")
+):
+    """Transcribe audio using OpenAI Whisper and optionally analyze with Gemini Flash 2.0"""
+    logger.info(f"Transcribe endpoint accessed with file: {file.filename}, analysis: {enable_analysis}")
+    
     if not file:
-        logger.error("No file uploaded")
         raise HTTPException(status_code=400, detail="No file uploaded")
     
-    # Check file type
-    if not file.content_type or not file.content_type.startswith('audio/'):
-        # Allow common audio extensions even if content_type is wrong
-        allowed_extensions = ['.mp3', '.wav', '.m4a', '.flac', '.ogg', '.webm']
-        if not any(file.filename.lower().endswith(ext) for ext in allowed_extensions):
-            raise HTTPException(
-                status_code=400, 
-                detail="Invalid file type. Please upload an audio file (MP3, WAV, M4A, FLAC, OGG, WEBM)"
-            )
+    # Check file size (limit to 50MB to prevent memory issues)
+    content = await file.read()
+    file_size_mb = len(content) / (1024 * 1024)
     
-    temp_path = None
+    if file_size_mb > 50:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"File too large ({file_size_mb:.1f}MB). Please upload files smaller than 50MB for better reliability."
+        )
+    
+    logger.info(f"Processing {file_size_mb:.1f}MB audio file: {file.filename}")
+    
     try:
-        logger.info(f"Processing file: {file.filename}")
+        # Save uploaded file to temporary location (content already read above)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as temp_file:
+            temp_file.write(content)
+            temp_file_path = temp_file.name
         
-        # Load model just-in-time to minimize memory usage
+        logger.info(f"Processing audio file: {file.filename}")
+        
+        # Transcribe with Whisper
         try:
-            whisper_model = load_model_for_transcription()
-        except Exception as model_error:
-            logger.error(f"Model loading failed: {model_error}")
-            raise HTTPException(
-                status_code=503, 
-                detail="Transcription service temporarily unavailable. Please try again in a few minutes."
-            )
+            whisper_result = model.transcribe(temp_file_path)
+            transcript_text = whisper_result["text"].strip()
+        except Exception as whisper_error:
+            logger.error(f"Whisper transcription failed for {file.filename}: {whisper_error}")
+            # Clean up temp file
+            if os.path.exists(temp_file_path):
+                os.unlink(temp_file_path)
+            
+            # Check for specific memory errors
+            error_msg = str(whisper_error)
+            if "paging file" in error_msg or "memory" in error_msg.lower():
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"Audio file too large for processing. Please try with a shorter audio file (under 5 minutes recommended)."
+                )
+            else:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Audio transcription failed. Please try with a different audio format or shorter file."
+                )
         
-        # Save uploaded file to temporary location
-        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as tmp:
-            content = await file.read()
-            if not content:
-                raise HTTPException(status_code=400, detail="File is empty")
-            
-            tmp.write(content)
-            temp_path = tmp.name
+        # Format transcript for better display
+        formatted_transcript = format_transcript_for_display(transcript_text)
         
-        logger.info(f"File saved to {temp_path}, starting transcription...")
+        # Clean up temporary file
+        os.unlink(temp_file_path)
         
-        # Transcribe the audio file with timeout and memory management
-        try:
-            # Log memory usage before transcription
-            memory_mb = psutil.Process().memory_info().rss / 1024 / 1024
-            logger.info(f"Memory usage before transcription: {memory_mb:.1f}MB")
-            
-            # Set a reasonable timeout for transcription
-            result = whisper_model.transcribe(temp_path)
-            logger.info("Transcription completed successfully")
-            
-            # Immediately free model memory after transcription
-            del whisper_model
-            gc.collect()
-            
-            memory_mb = psutil.Process().memory_info().rss / 1024 / 1024
-            logger.info(f"Memory usage after cleanup: {memory_mb:.1f}MB")
-            
-        except Exception as transcribe_error:
-            logger.error(f"Whisper transcription failed: {transcribe_error}")
-            # Clean up memory on error
-            gc.collect()
-            raise HTTPException(
-                status_code=500, 
-                detail=f"Audio processing failed. Please try with a shorter audio file or different format."
-            )
+        logger.info(f"Transcription completed for: {file.filename}")
         
-        return {
+        # Prepare response
+        response_data = {
             "filename": file.filename,
-            "transcription": result["text"],
-            "language": result.get("language", "unknown"),
+            "transcription": formatted_transcript,
+            "language": whisper_result["language"],
             "success": True
         }
         
-    except HTTPException:
-        # Re-raise HTTP exceptions as-is
-        raise
-    except Exception as e:
-        logger.error(f"Unexpected error during transcription: {str(e)}")
-        raise HTTPException(status_code=500, detail="An unexpected error occurred. Please try again.")
+        # Run Gemini analysis if requested
+        if enable_analysis.lower() == "true":
+            logger.info("Running Gemini analysis...")
+            analysis_result = await analyze_with_gemini(
+                transcript=transcript_text,
+                set_list=set_list,
+                custom_prompt=custom_prompt
+            )
+            response_data["analysis"] = analysis_result
+            logger.info(f"Gemini analysis completed: {analysis_result['success']}")
         
-    finally:
-        # Clean up temporary file
-        if temp_path and os.path.exists(temp_path):
-            try:
-                os.remove(temp_path)
-                logger.info(f"Cleaned up temporary file: {temp_path}")
-            except Exception as e:
-                logger.warning(f"Failed to clean up temp file {temp_path}: {e}")
-
-@app.get("/health")
-async def health_check():
-    logger.info("Health check accessed")
-    return {
-        "status": "healthy",
-        "memory_optimized": True,
-        "model_type": "tiny.en (load-per-request)"
-    }
-
-@app.post("/api/preload-model")
-async def preload_model():
-    """Test model loading (no persistent preload in memory-optimized mode)"""
-    logger.info("Model preload endpoint accessed - testing model loading capability")
-    try:
-        # Test load and immediately free
-        test_model = load_model_for_transcription()
-        del test_model
-        gc.collect()
+        return response_data
         
-        return {
-            "message": "Model loading test successful (memory-optimized mode)",
-            "model_type": "tiny.en",
-            "memory_optimized": True
-        }
     except Exception as e:
-        logger.error(f"Model loading test failed: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to test model loading: {str(e)}"
-        )
+        logger.error(f"Error processing {file.filename}: {str(e)}")
+        
+        # Clean up temp file if it exists
+        if 'temp_file_path' in locals() and os.path.exists(temp_file_path):
+            os.unlink(temp_file_path)
+            
+        raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
+
+@app.get("/api/prompt")
+async def get_default_prompt():
+    """Get the current default prompt template"""
+    return {"prompt": DEFAULT_PROMPT_TEMPLATE}
+
+@app.post("/api/prompt")  
+async def update_default_prompt(new_prompt: str = Form(...)):
+    """Update the default prompt template"""
+    global DEFAULT_PROMPT_TEMPLATE
+    DEFAULT_PROMPT_TEMPLATE = new_prompt
+    logger.info("Default prompt template updated")
+    return {"message": "Prompt updated successfully", "prompt": DEFAULT_PROMPT_TEMPLATE}

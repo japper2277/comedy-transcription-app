@@ -5,5 +5,6 @@ python-multipart
 psutil
 python-dotenv
 requests
+google-generativeai
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch
