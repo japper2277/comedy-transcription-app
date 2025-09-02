@@ -1,0 +1,61 @@
+services:
+  - type: web
+    name: transcription-api
+    env: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    region: oregon
+    buildCommand: ""
+    startCommand: ""
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: PORT
+        value: 8000
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: transcription-redis
+          property: connectionString
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GCS_BUCKET_NAME
+        value: transcription-staging-files
+      - key: GOOGLE_CLOUD_PROJECT
+        sync: false
+      - key: CORS_ORIGINS
+        value: "*"
+    autoDeploy: true
+    
+  - type: worker
+    name: transcription-worker
+    env: docker
+    dockerfilePath: ./worker.Dockerfile
+    plan: starter
+    region: oregon
+    buildCommand: ""
+    startCommand: ""
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: transcription-redis
+          property: connectionString
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GCS_BUCKET_NAME
+        value: transcription-staging-files
+      - key: GOOGLE_CLOUD_PROJECT
+        sync: false
+    autoDeploy: true
+
+  - type: redis
+    name: transcription-redis
+    plan: starter
+    region: oregon
