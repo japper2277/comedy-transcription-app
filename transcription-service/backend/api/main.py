@@ -12,7 +12,6 @@ try:
     import google.cloud.storage as storage
     GCS_AVAILABLE = True
 except ImportError:
-    print("WARNING: Google Cloud Storage not available - using local file storage for development")
     GCS_AVAILABLE = False
     storage = None
 
@@ -21,7 +20,6 @@ try:
     from celery_worker.tasks import process_transcription_job
     CELERY_AVAILABLE = True
 except ImportError:
-    print("WARNING: Celery worker not available - using direct processing for development")
     CELERY_AVAILABLE = False
 
 app = FastAPI(title="AI Transcription Service", version="1.0.0")
@@ -39,9 +37,7 @@ app.add_middleware(
 if GCS_AVAILABLE:
     try:
         storage_client = storage.Client()
-        print("SUCCESS: Google Cloud Storage initialized")
-    except Exception as e:
-        print(f"WARNING: GCS authentication failed: {e}")
+    except Exception:
         GCS_AVAILABLE = False
         storage_client = None
 else:
@@ -54,7 +50,6 @@ jobs_db = {}
 LOCAL_UPLOAD_DIR = "temp_uploads"
 if not GCS_AVAILABLE:
     os.makedirs(LOCAL_UPLOAD_DIR, exist_ok=True)
-    print(f"INFO: Using local file storage: {LOCAL_UPLOAD_DIR}")
 
 @app.get("/")
 async def root():
@@ -86,19 +81,17 @@ async def create_transcription_job(file: UploadFile = File(...)):
     file_key = f"uploads/{job_id}-{file.filename}"
     
     try:
-        # Read file contents
-        contents = await file.read()
-        
-        # Store file (GCS or local)
+        # Store file (GCS or local) - stream directly without reading into memory
         if GCS_AVAILABLE:
-            # Upload to Google Cloud Storage
+            # Stream upload to Google Cloud Storage
             bucket = storage_client.bucket(settings.gcs_bucket_name)
             blob = bucket.blob(file_key)
-            blob.upload_from_string(contents)
+            blob.upload_from_file(file.file)
             file_path = file_key  # GCS path
         else:
-            # Save to local storage
+            # Stream to local storage
             file_path = os.path.join(LOCAL_UPLOAD_DIR, f"{job_id}-{file.filename}")
+            contents = await file.read()
             with open(file_path, "wb") as f:
                 f.write(contents)
         
@@ -116,7 +109,12 @@ async def create_transcription_job(file: UploadFile = File(...)):
         
         # Process transcription (Celery or direct)
         if CELERY_AVAILABLE:
-            task = process_transcription_job.delay(file_path, job_id)
+            # Pass the correct parameters to match worker signature
+            task = process_transcription_job.delay(
+                job_id=job_id,
+                gcs_file_path=file_path,
+                filename=file.filename
+            )
             message = "Transcription job queued successfully"
         else:
             # Direct processing for development
@@ -190,17 +188,14 @@ def process_transcription_direct(job_id: str, file_path: str):
                 
                 # Update with success
                 update_job_status(job_id, JobStatus.COMPLETED, result=transcript)
-                print(f"SUCCESS: Transcription completed for job {job_id}")
                 
             except Exception as e:
                 error_msg = f"Transcription failed: {str(e)}"
                 update_job_status(job_id, JobStatus.FAILED, error=error_msg)
-                print(f"ERROR: Transcription failed for job {job_id}: {error_msg}")
                 
         except Exception as e:
             error_msg = f"Processing failed: {str(e)}"
             update_job_status(job_id, JobStatus.FAILED, error=error_msg)
-            print(f"ERROR: Processing failed for job {job_id}: {error_msg}")
     
     # Run transcription in background thread
     thread = threading.Thread(target=transcribe, daemon=True)
