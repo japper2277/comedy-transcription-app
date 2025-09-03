@@ -22,7 +22,7 @@ class JobStatusResponse(BaseModel):
     job_id: str
     status: JobStatus
     result: Optional[str] = None
-    analysis: Optional[dict] = None
+    analysis: Optional[str] = None
     error: Optional[str] = None
     created_at: str
     completed_at: Optional[str] = None

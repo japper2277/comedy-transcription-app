@@ -60,7 +60,12 @@ async def health_check():
     return {"status": "healthy", "timestamp": datetime.datetime.now().isoformat()}
 
 @app.post("/v1/transcripts", status_code=status.HTTP_202_ACCEPTED, response_model=TranscriptionJobResponse)
-async def create_transcription_job(file: UploadFile = File(...)):
+async def create_transcription_job(
+    file: UploadFile = File(...),
+    model: str = "openai-whisper",
+    set_list: str = "",
+    custom_prompt: str = ""
+):
     """
     Upload audio file and create transcription job
     """
@@ -113,13 +118,16 @@ async def create_transcription_job(file: UploadFile = File(...)):
             task = process_transcription_job.delay(
                 job_id=job_id,
                 gcs_file_path=file_path,
-                filename=file.filename
+                filename=file.filename,
+                model=model,
+                set_list=set_list,
+                custom_prompt=custom_prompt
             )
-            message = "Transcription job queued successfully"
+            message = f"Transcription job queued successfully (model: {model})"
         else:
             # Direct processing for development
-            process_transcription_direct(job_id, file_path)
-            message = "Transcription started (direct processing)"
+            process_transcription_direct(job_id, file_path, model, set_list, custom_prompt)
+            message = f"Transcription started (direct processing, model: {model})"
         
         return TranscriptionJobResponse(
             job_id=job_id,
@@ -171,7 +179,7 @@ def update_job_status(job_id: str, status: JobStatus, result: str = None, error:
             jobs_db[job_id]["completed_at"] = datetime.datetime.now().isoformat()
 
 # Direct transcription processing for development (without Celery)
-def process_transcription_direct(job_id: str, file_path: str):
+def process_transcription_direct(job_id: str, file_path: str, model: str = "openai-whisper", set_list: str = "", custom_prompt: str = ""):
     """Process transcription directly without Celery (for development)"""
     import threading
     
@@ -179,19 +187,55 @@ def process_transcription_direct(job_id: str, file_path: str):
         try:
             # Update status to processing
             jobs_db[job_id]["status"] = JobStatus.PROCESSING
+            result = {}
             
-            # Import OpenAI client here to avoid startup errors
-            try:
-                from celery_worker.whisper_client import WhisperClient
-                whisper_client = WhisperClient(api_key=settings.openai_api_key)
-                transcript = whisper_client.transcribe_audio(file_path)
-                
-                # Update with success
-                update_job_status(job_id, JobStatus.COMPLETED, result=transcript)
-                
-            except Exception as e:
-                error_msg = f"Transcription failed: {str(e)}"
-                update_job_status(job_id, JobStatus.FAILED, error=error_msg)
+            # Transcription step
+            if model in ["openai-whisper", "whisper-plus-gemini"]:
+                try:
+                    from celery_worker.whisper_client import WhisperClient
+                    whisper_client = WhisperClient(api_key=settings.openai_api_key)
+                    transcript = whisper_client.transcribe_audio(file_path)
+                    result["transcript"] = transcript
+                    
+                except Exception as e:
+                    error_msg = f"Transcription failed: {str(e)}"
+                    update_job_status(job_id, JobStatus.FAILED, error=error_msg)
+                    return
+            
+            # Analysis step
+            if model in ["whisper-plus-gemini", "gemini-analysis-only"]:
+                try:
+                    from celery_worker.gemini_client import GeminiClient
+                    gemini_client = GeminiClient()
+                    
+                    # Use existing transcript or empty string for analysis-only
+                    transcript_for_analysis = result.get("transcript", "")
+                    
+                    analysis_result = gemini_client.analyze_comedy_performance(
+                        transcript_for_analysis,
+                        set_list or "",
+                        custom_prompt
+                    )
+                    # Handle dict response from GeminiClient
+                    if isinstance(analysis_result, dict) and analysis_result.get("success"):
+                        result["analysis"] = analysis_result.get("analysis")
+                    else:
+                        result["analysis"] = analysis_result
+                    
+                except Exception as e:
+                    error_msg = f"Analysis failed: {str(e)}"
+                    update_job_status(job_id, JobStatus.FAILED, error=error_msg)
+                    return
+            
+            # Update with success
+            if model == "openai-whisper":
+                update_job_status(job_id, JobStatus.COMPLETED, result=result.get("transcript", ""))
+            else:
+                # For Gemini models, store full result with both transcript and analysis
+                jobs_db[job_id]["result"] = result.get("transcript", "")
+                jobs_db[job_id]["analysis"] = result.get("analysis")
+                jobs_db[job_id]["status"] = JobStatus.COMPLETED
+                jobs_db[job_id]["completed_at"] = datetime.datetime.now().isoformat()
                 
         except Exception as e:
             error_msg = f"Processing failed: {str(e)}"

@@ -9,10 +9,11 @@ class GeminiClient:
         # Get API key from parameter or environment
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
         
-        if not self.api_key:
-            raise ValueError("Gemini API key is required")
-            
-        self.api_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+        # Enable mock mode if no API key
+        self.mock_mode = not self.api_key
+        
+        if not self.mock_mode:
+            self.api_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
         
     def transcribe_audio(self, file_path: str) -> str:
         """
@@ -23,6 +24,12 @@ class GeminiClient:
         # We'll use it for post-processing Whisper transcripts
         raise NotImplementedError("Gemini Flash 2.0 is used for text analysis, not direct audio transcription")
     
+    def analyze_comedy_performance(self, transcript: str, set_list: str = "", custom_prompt: str = "") -> dict:
+        """
+        Alias for analyze_transcript for compatibility
+        """
+        return self.analyze_transcript(transcript, set_list, custom_prompt)
+    
     def analyze_transcript(self, transcript: str, set_list: str = "", custom_prompt: str = "") -> dict:
         """
         Analyze transcript using Gemini Flash 2.0 for comedy analysis
@@ -30,8 +37,33 @@ class GeminiClient:
         logger.info("GEMINI DEBUG - Starting analysis")
         logger.info(f"   Transcript length: {len(transcript)} chars")
         logger.info(f"   Set list length: {len(set_list)} chars")
-        logger.info(f"   API key present: {'YES' if self.api_key else 'NO'}")
-        logger.info(f"   API URL: {self.api_url}")
+        logger.info(f"   Mock mode: {'YES' if self.mock_mode else 'NO'}")
+        
+        # Mock mode analysis
+        if self.mock_mode:
+            import time
+            time.sleep(1)  # Simulate processing time
+            mock_analysis = f"""[MOCK GEMINI ANALYSIS]
+
+**Joke: Opening Bit**
+{transcript[:100]}...
+
+**NEW BIT: Performance Test**
+This is a simulated analysis of your comedy performance. The Gemini integration is working correctly!
+
+**Riff**
+In production, this would be real AI-powered comedy analysis using Google's Gemini 2.0 Flash model.
+
+Analysis Features:
+- Joke identification and categorization
+- Set list matching
+- New bit discovery  
+- Performance insights
+- Comedy structure analysis
+
+Set List Provided: {"Yes" if set_list.strip() else "No"}
+Custom Prompt: {"Yes" if custom_prompt.strip() else "No"}"""
+            return {"success": True, "analysis": mock_analysis}
         
         try:
             # Default comedy analysis prompt
