@@ -7,11 +7,11 @@ from .config import settings
 import tempfile
 import os
 
-# Apply fakeredis patch for local development
-try:
-    import fakeredis_patch
-except ImportError:
-    pass
+# Apply fakeredis patch for local development - disabled for testing
+# try:
+#     import fakeredis_patch
+# except ImportError:
+#     pass
 
 # Try to import Google Cloud Storage, but make it optional for local development
 try:
@@ -24,7 +24,7 @@ except ImportError:
 # Try to import Celery worker
 try:
     from celery_worker.tasks import process_transcription_job
-    CELERY_AVAILABLE = True
+    CELERY_AVAILABLE = False  # Force direct processing for testing
 except ImportError:
     CELERY_AVAILABLE = False
 
@@ -79,7 +79,7 @@ async def create_transcription_job(
         raise HTTPException(status_code=400, detail="No file provided")
     
     # Validate file type
-    allowed_extensions = {'.mp3', '.wav', '.m4a', '.flac', '.mp4', '.webm'}
+    allowed_extensions = {'.mp3', '.wav', '.m4a', '.flac', '.mp4', '.webm', '.txt'}
     file_ext = '.' + file.filename.split('.')[-1].lower()
     if file_ext not in allowed_extensions:
         raise HTTPException(
@@ -174,6 +174,73 @@ async def list_jobs():
     """
     return {"jobs": list(jobs_db.values())}
 
+@app.post("/v1/gemini-analysis")
+async def run_gemini_analysis(
+    job_id: str = Form(...),
+    set_list: str = Form(""),
+    custom_prompt: str = Form("")
+):
+    """
+    Run Gemini analysis on an existing transcription job
+    """
+    if job_id not in jobs_db:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    job = jobs_db[job_id]
+    
+    # Check if job has a transcript
+    if not job.get("result"):
+        raise HTTPException(status_code=400, detail="No transcript available for analysis")
+    
+    try:
+        # Update status to processing
+        jobs_db[job_id]["status"] = JobStatus.PROCESSING
+        
+        # Run Gemini analysis
+        import google.generativeai as genai
+        genai.configure(api_key=settings.gemini_api_key)
+        
+        model_client = genai.GenerativeModel('gemini-2.0-flash-exp')
+        
+        prompt = f"""Analyze this comedy performance transcript and provide detailed feedback:
+
+Transcript: {job["result"]}
+Set List: {set_list}
+Custom Instructions: {custom_prompt}
+
+Please provide analysis covering:
+1. Timing and delivery
+2. Joke structure and setup/punchline effectiveness  
+3. Audience engagement and response
+4. Areas for improvement
+5. Overall performance assessment"""
+        
+        response = model_client.generate_content(prompt)
+        analysis = response.text
+        
+        # Update job with analysis
+        jobs_db[job_id]["analysis"] = analysis
+        jobs_db[job_id]["status"] = JobStatus.COMPLETED
+        jobs_db[job_id]["completed_at"] = datetime.datetime.now().isoformat()
+        
+        return {
+            "job_id": job_id,
+            "status": JobStatus.COMPLETED,
+            "analysis": analysis,
+            "message": "Gemini analysis completed successfully"
+        }
+        
+    except Exception as e:
+        error_msg = f"Gemini analysis failed: {str(e)}"
+        jobs_db[job_id]["error"] = error_msg
+        jobs_db[job_id]["status"] = JobStatus.FAILED
+        jobs_db[job_id]["completed_at"] = datetime.datetime.now().isoformat()
+        
+        raise HTTPException(
+            status_code=500,
+            detail=error_msg
+        )
+
 # Function to update job status (called by Celery worker)
 def update_job_status(job_id: str, status: JobStatus, result: str = None, error: str = None):
     if job_id in jobs_db:
@@ -214,25 +281,46 @@ def process_transcription_direct(job_id: str, file_path: str, model: str = "open
                     update_job_status(job_id, JobStatus.FAILED, error=error_msg)
                     return
             
-            # Analysis step
+            # Analysis step - Direct Gemini implementation
             if model in ["whisper-plus-gemini", "gemini-analysis-only"]:
                 try:
-                    from celery_worker.gemini_client import GeminiClient
-                    gemini_client = GeminiClient()
+                    import google.generativeai as genai
+                    genai.configure(api_key=settings.gemini_api_key)
                     
-                    # Use existing transcript or empty string for analysis-only
-                    transcript_for_analysis = result.get("transcript", "")
+                    model_client = genai.GenerativeModel('gemini-2.0-flash-exp')
                     
-                    analysis_result = gemini_client.analyze_comedy_performance(
-                        transcript_for_analysis,
-                        set_list or "",
-                        custom_prompt
-                    )
-                    # Handle dict response from GeminiClient
-                    if isinstance(analysis_result, dict) and analysis_result.get("success"):
-                        result["analysis"] = analysis_result.get("analysis")
+                    # Use file content for analysis-only mode
+                    if model == "gemini-analysis-only":
+                        # Handle both GCS and local file paths
+                        stored_file_path = jobs_db[job_id]["file_path"]
+                        
+                        if GCS_AVAILABLE and stored_file_path.startswith("uploads/"):
+                            # Download from GCS
+                            bucket = storage_client.bucket(settings.gcs_bucket_name)
+                            blob = bucket.blob(stored_file_path)
+                            transcript_for_analysis = blob.download_as_text()
+                        else:
+                            # Read from local file
+                            with open(stored_file_path, 'r', encoding='utf-8') as f:
+                                transcript_for_analysis = f.read()
                     else:
-                        result["analysis"] = analysis_result
+                        transcript_for_analysis = result.get("transcript", "")
+                    
+                    prompt = f"""Analyze this comedy performance transcript and provide detailed feedback:
+
+Transcript: {transcript_for_analysis}
+Set List: {set_list}
+Custom Instructions: {custom_prompt}
+
+Please provide analysis covering:
+1. Timing and delivery
+2. Joke structure and setup/punchline effectiveness  
+3. Audience engagement and response
+4. Areas for improvement
+5. Overall performance assessment"""
+                    
+                    response = model_client.generate_content(prompt)
+                    result["analysis"] = response.text
                     
                 except Exception as e:
                     error_msg = f"Analysis failed: {str(e)}"
