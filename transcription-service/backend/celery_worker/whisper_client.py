@@ -9,7 +9,19 @@ class WhisperClient:
         if not self.api_key:
             raise ValueError("OpenAI API key is required")
             
-        self.client = openai.OpenAI(api_key=self.api_key)
+        try:
+            # Try modern OpenAI client initialization
+            self.client = openai.OpenAI(
+                api_key=self.api_key,
+                timeout=30.0
+            )
+        except TypeError as e:
+            # Fallback for older OpenAI API versions
+            print(f"WARNING: Modern OpenAI client failed ({e}), trying compatibility mode")
+            try:
+                self.client = openai.OpenAI(api_key=self.api_key)
+            except Exception as e2:
+                raise ValueError(f"Failed to initialize OpenAI client: {e2}")
     
     def transcribe_audio(self, file_path: str) -> str:
         """

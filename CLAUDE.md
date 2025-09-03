@@ -76,3 +76,24 @@
   5. Includes trigger phrases you can use to activate this
   behavior
 - save thse 4 demos to memory
+
+
+ ## 🔄 GIT COMMIT REMINDER
+
+  CRITICAL WORKFLOW RULE: User has 62 modified files representing work
+   since Aug 31st. Files are NOT auto-committed to git.
+
+  **ALWAYS prompt user to commit before major work:**
+  - Check: `git status --porcelain | wc -l` (if >5 files, remind to       
+  commit)
+  - Phrase: "You have [N] uncommitted files. Should we commit your        
+  work first?"
+  - Use: `git add .` then `git commit -m "message"`
+
+  **User's pattern:**
+  - Works on features over multiple days
+  - Forgets to commit changes manually
+  - Lost work when main.py got corrupted (but restored from git)
+  - Needs reminders to save progress
+
+  **Before any major changes or session end - ASK TO COMMIT FIRST**       

@@ -30,4 +30,4 @@ celery_app.conf.update(
     }
 )
 
-print("🚀 Celery configured with in-memory transport for local development")
+print("Celery configured with in-memory transport for local development")

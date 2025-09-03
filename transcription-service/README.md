@@ -1,150 +1,308 @@
-# AI Transcription Service
+# AI Comedy Transcription Service
 
-Cloud-native transcription service built with FastAPI, Celery, and React. Upload audio files and get high-accuracy transcriptions powered by OpenAI Whisper.
+A cloud-native transcription service that combines OpenAI Whisper for high-quality audio transcription with Gemini Flash 2.0 for intelligent comedy performance analysis.
 
-## Features
+## 🎭 What It Does
 
-- 🎤 **High-Quality Transcription** - OpenAI Whisper API integration
-- ⚡ **Async Processing** - Celery workers for background transcription
-- 📊 **Usage Tracking** - 300-minute monthly limits with $5/month pricing
-- 🔄 **Real-time Updates** - Job status polling and progress tracking
-- 📱 **Modern UI** - Clean React dashboard for job management
-- 🐳 **Docker Ready** - Full containerized development environment
+- **Audio Transcription**: Converts comedy performances to text using OpenAI Whisper
+- **Comedy Analysis**: Analyzes transcripts with Gemini Flash 2.0 to identify jokes, timing, and performance insights
+- **Set List Comparison**: Compares performed material against planned setlist
+- **Professional Insights**: Provides actionable feedback for comedy improvement
 
-## Quick Start
+## 🚀 Features
 
-### Prerequisites
-- Docker & Docker Compose
-- OpenAI API key
-- Google Cloud Storage bucket (optional for local dev)
+### Three AI Models Available:
+1. **OpenAI Whisper Only** - High-quality transcription only
+2. **Whisper + Gemini Flash 2.0** - Transcription + comedy analysis (recommended)
+3. **Gemini Analysis Only** - For analyzing existing transcripts
 
-### Setup
+### Supported Audio Formats:
+- MP3, WAV, M4A, FLAC, MP4, WebM
+- Up to 25MB file size limit
+- Optimized for comedy performance recordings
 
-1. **Clone and navigate:**
-```bash
-cd transcription-service
-```
+### Comedy Analysis Features:
+- Joke identification and categorization
+- Set list comparison and tracking  
+- New material detection
+- Audience response analysis
+- Performance timing insights
+- Actionable improvement suggestions
 
-2. **Configure environment:**
-```bash
-cp .env.example .env
-# Edit .env with your API keys
-```
-
-3. **Start services:**
-```bash
-cd infrastructure
-docker-compose up -d
-```
-
-4. **Access the application:**
-- Frontend: http://localhost:3000
-- API: http://localhost:8000
-- API Docs: http://localhost:8000/docs
-
-## Architecture
+## 📁 Project Structure
 
 ```
 transcription-service/
-├── backend/                 # FastAPI + Celery
-│   ├── api/                 # REST API endpoints
-│   ├── celery_worker/       # Background job processing
-│   └── requirements.txt     # Python dependencies
-├── frontend/                # React SPA
-│   ├── src/components/      # UI components
-│   ├── src/services/        # API integration
-│   └── package.json         # Node dependencies
-└── infrastructure/          # Docker setup
-    └── docker-compose.yml   # Multi-service orchestration
+├── backend/                 # FastAPI backend service
+│   ├── api/
+│   │   ├── main.py         # Main API endpoints
+│   │   ├── models.py       # Pydantic models
+│   │   └── config.py       # Configuration settings
+│   ├── celery_worker/
+│   │   ├── whisper_client.py    # OpenAI Whisper integration
+│   │   ├── gemini_client.py     # Gemini Flash 2.0 integration
+│   │   └── tasks.py             # Celery background tasks
+│   └── requirements.txt    # Python dependencies
+├── frontend/               # React frontend application
+│   ├── src/
+│   │   ├── components/     # React components
+│   │   ├── services/       # API service calls
+│   │   └── styles/         # CSS styling
+│   └── package.json        # Node.js dependencies
+└── .env                    # Environment variables
 ```
 
-## Business Model
+## ⚙️ Setup Instructions
 
-- **Pricing:** $5/month for 300 minutes
-- **Overage:** $0.02/minute
-- **Cost Structure:** ~$1.80/user in API costs (40% gross margin)
-- **Competitive:** Matches Otter.ai per-minute pricing
+### Prerequisites
+- Python 3.8+
+- Node.js 16+
+- OpenAI API key
+- Google Gemini API key
 
-## Development
+### 1. Clone and Setup Environment
 
-### Local Development (without Docker)
-
-**Backend:**
 ```bash
+cd transcription-service
+cp .env.example .env
+```
+
+### 2. Configure API Keys
+
+Edit `.env` file:
+
+**For Production (Real AI Transcription):**
+```bash
+# Required API Keys
+OPENAI_API_KEY=sk-your-openai-key-here
+GEMINI_API_KEY=your-gemini-key-here
+
+# Optional (for production)
+GCS_BUCKET_NAME=your-bucket-name
+GOOGLE_CLOUD_PROJECT=your-project-id
+```
+
+**For Development/Testing (Mock Mode):**
+```bash
+# Mock Mode - No API costs, returns test transcription
+OPENAI_API_KEY=test
+GEMINI_API_KEY=your-gemini-key-here
+
+# Optional (for production)
+GCS_BUCKET_NAME=your-bucket-name
+GOOGLE_CLOUD_PROJECT=your-project-id
+```
+
+> **💡 Mock Mode**: Setting `OPENAI_API_KEY=test` enables mock transcription mode, which returns realistic test responses without using real AI APIs. Perfect for development, testing, and demos!
+
+### 3. Start Services (Recommended Method)
+
+Use the provided startup scripts to avoid common issues:
+
+```bash
+# Start both services cleanly (Windows)
+scripts\start-all.bat
+
+# Or start individually
+scripts\start-backend.bat
+scripts\start-frontend.bat
+
+# Stop all services when done
+scripts\stop-all.bat
+```
+
+**Manual Method (if needed):**
+```bash
+# Backend
 cd backend
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
 pip install -r requirements.txt
+python -m uvicorn api.main:app --reload --host 0.0.0.0 --port 8000
 
-# Start Redis
-redis-server
-
-# Start API
-uvicorn api.main:app --reload --port 8000
-
-# Start Celery worker (separate terminal)
-celery -A celery_worker.celery_app worker --loglevel=info
-```
-
-**Frontend:**
-```bash
+# Frontend (new terminal)
 cd frontend
 npm install
 npm run dev
 ```
 
-### API Endpoints
+Backend will be available at: `http://localhost:8000`
+Frontend will be available at: `http://localhost:3000` (or next available port)
 
-- `POST /v1/transcripts` - Upload audio file
-- `GET /v1/transcripts/{job_id}` - Get job status
-- `GET /v1/jobs` - List all jobs
-- `GET /health` - Health check
+## 🎯 How to Use
 
-### Usage Flow
+### 1. Open the Web Interface
+Navigate to `http://localhost:3000`
 
-1. User uploads audio file via React frontend
-2. FastAPI uploads file to GCS and queues Celery job
-3. Celery worker downloads file, calls OpenAI Whisper API
-4. Frontend polls for job completion and displays results
-5. Usage tracking enforces 300-minute monthly limits
+### 2. Choose Your AI Model
+- **OpenAI Whisper**: For transcription only
+- **Whisper + Gemini Flash 2.0**: For transcription + comedy analysis (recommended)
 
-## Deployment
+### 3. Optional: Add Comedy Context
+When using Gemini analysis:
+- **Set List**: Paste your planned jokes for comparison
+- **Custom Prompt**: Add specific analysis instructions
 
-### Google Cloud Platform
-```bash
-# Deploy to Cloud Run
-gcloud run deploy transcription-api --source backend/
-gcloud run deploy transcription-frontend --source frontend/
+### 4. Upload Audio File
+- Drag & drop or click to select your comedy recording
+- Supported: MP3, WAV, M4A, FLAC, MP4, WebM (max 25MB)
 
-# Set up Celery workers on GKE or higher-CPU Cloud Run instances
+### 5. View Results
+- **Transcription**: Full text of your performance
+- **Comedy Analysis**: AI-powered insights including:
+  - Matched jokes from your setlist
+  - New material identification
+  - Performance strengths and areas for improvement
+  - Timing and audience response analysis
+
+## 📊 API Endpoints
+
+### Upload Audio File
+```http
+POST /v1/transcripts
+Content-Type: multipart/form-data
+
+Parameters:
+- file: Audio file (required)
+- model: "openai-whisper" | "whisper-plus-gemini" (optional)
+- set_list: Planned setlist text (optional)
+- custom_prompt: Analysis instructions (optional)
 ```
 
-### Environment Variables
-```bash
-OPENAI_API_KEY=sk-...
-GCS_BUCKET_NAME=your-bucket
-GOOGLE_CLOUD_PROJECT=your-project
-REDIS_URL=redis://localhost:6379/0
+### Check Job Status
+```http
+GET /v1/transcripts/{job_id}
 ```
 
-## Cost Analysis
+### List All Jobs
+```http
+GET /v1/jobs
+```
 
-**Per 300-minute user/month:**
-- OpenAI Whisper API: $1.80
-- Cloud compute: $0.60
-- Storage: $0.03
-- Infrastructure: $0.50
-- **Total cost:** $2.93
-- **Revenue:** $5.00
-- **Gross margin:** $2.07 (41.4%)
+### Health Check
+```http
+GET /health
+```
 
-## Monitoring
+## 🧪 Mock Mode (Development & Testing)
 
-- Health checks at `/health`
-- Celery task monitoring
-- Job failure tracking and retry logic
-- Usage analytics for billing
+The transcription service includes a built-in **Mock Mode** for development and testing without API costs.
+
+### **Enable Mock Mode**
+Set `OPENAI_API_KEY=test` in your `.env` file:
+```bash
+OPENAI_API_KEY=test
+```
+
+### **Mock Mode Features**
+✅ **Complete End-to-End Testing** - Full upload → processing → results flow  
+✅ **No API Costs** - No charges for development and testing  
+✅ **Realistic Responses** - Returns sample transcription text  
+✅ **Same User Experience** - Frontend works identically to production  
+✅ **Perfect for Demos** - Show complete functionality to clients  
+
+### **Mock Response Example**
+```json
+{
+  "job_id": "12345-abcd-6789",
+  "status": "completed",
+  "result": "[MOCK TRANSCRIPTION] This is a test transcription of the uploaded audio file 'comedy-set.mp3'. In production, this would contain the actual Whisper API transcription results.",
+  "error": null
+}
+```
+
+### **When to Use Mock Mode**
+- 🛠️ **Local Development** - Test features without API dependency
+- 🧪 **Integration Testing** - Verify frontend/backend communication
+- 📱 **User Demos** - Show complete app functionality
+- 💰 **Cost Control** - Develop without OpenAI charges
+
+### **Switch to Production**
+Replace `OPENAI_API_KEY=test` with your real OpenAI API key for live transcription.
+
+## 💰 Business Model
+
+**Profitable SaaS Model**: $5/month for 300 minutes of transcription
+- **Cost**: $0.006/minute (OpenAI Whisper)
+- **Revenue**: $5/month (300 minutes)
+- **Profit**: $3.20/month per user (64% margin)
+
+### Target Market:
+- Stand-up comedians
+- Comedy clubs
+- Comedy writers
+- Podcast hosts
+- Performance coaches
+
+## 🔧 Development
+
+### Local Development
+- Backend auto-reloads on code changes
+- Frontend hot-reloads with Vite
+- In-memory job storage for testing
+- Local file storage (no cloud required)
+
+### Production Deployment
+- Deploy backend to Google Cloud Run
+- Deploy frontend to Vercel/Netlify
+- Use Redis for job storage
+- Use Google Cloud Storage for files
+
+### Adding Features
+1. **Backend**: Add endpoints in `api/main.py`
+2. **Frontend**: Add components in `src/components/`
+3. **AI Integration**: Extend clients in `celery_worker/`
+
+## 🚨 Troubleshooting
+
+### Quick Fix for Most Issues:
+```bash
+# Stop all services and restart cleanly
+scripts\stop-all.bat
+scripts\start-all.bat
+```
+
+### Debug Endpoints:
+When troubleshooting, check these endpoints:
+- Health check: `http://localhost:8000/health`
+- CORS config: `http://localhost:8000/debug/cors`
+- Process info: `http://localhost:8000/debug/processes`
+- Configuration: `http://localhost:8000/debug/config`
+
+### Common Issues:
+
+**"API Status: Offline" in frontend**
+- Multiple backend processes running (use scripts to restart)
+- CORS misconfiguration (check debug/cors endpoint)
+- Frontend on unexpected port (check console output)
+
+**"CORS policy" errors in browser**
+- Use startup scripts to ensure clean process management
+- Check frontend port in console output
+- Verify CORS configuration includes your port
+
+**"File upload fails"**
+- Keep files under 25MB for reliability
+- Use supported formats: MP3, WAV, M4A, FLAC, MP4, WebM
+- Try shorter audio files (under 5 minutes)
+
+**"Unicode/Emoji errors"**
+- Never use emojis in backend Python code
+- Use ASCII-only characters for console output
+
+### Full Troubleshooting Guide:
+See [TROUBLESHOOTING.md](./TROUBLESHOOTING.md) for detailed solutions.
+
+## 📝 License
+
+This project is part of the comedy transcription app ecosystem.
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create feature branch
+3. Add your improvements
+4. Test with real audio files
+5. Submit pull request
 
 ---
 
-**Ready for production deployment with proven unit economics and scalable architecture.**
+**Built with**: FastAPI, React, OpenAI Whisper, Gemini Flash 2.0, and ❤️ for comedy
