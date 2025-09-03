@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, status
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 import uuid
 import datetime
@@ -6,6 +6,12 @@ from .models import TranscriptionJobResponse, JobStatusResponse, JobStatus
 from .config import settings
 import tempfile
 import os
+
+# Apply fakeredis patch for local development
+try:
+    import fakeredis_patch
+except ImportError:
+    pass
 
 # Try to import Google Cloud Storage, but make it optional for local development
 try:
@@ -62,9 +68,9 @@ async def health_check():
 @app.post("/v1/transcripts", status_code=status.HTTP_202_ACCEPTED, response_model=TranscriptionJobResponse)
 async def create_transcription_job(
     file: UploadFile = File(...),
-    model: str = "openai-whisper",
-    set_list: str = "",
-    custom_prompt: str = ""
+    model: str = Form("openai-whisper"),
+    set_list: str = Form(""),
+    custom_prompt: str = Form("")
 ):
     """
     Upload audio file and create transcription job
@@ -155,6 +161,7 @@ async def get_transcription_status(job_id: str):
         job_id=job_id,
         status=job["status"],
         result=job.get("result"),
+        analysis=job.get("analysis"),
         error=job.get("error"),
         created_at=job["created_at"],
         completed_at=job.get("completed_at")
@@ -182,6 +189,11 @@ def update_job_status(job_id: str, status: JobStatus, result: str = None, error:
 def process_transcription_direct(job_id: str, file_path: str, model: str = "openai-whisper", set_list: str = "", custom_prompt: str = ""):
     """Process transcription directly without Celery (for development)"""
     import threading
+    import os
+    
+    # For development, run synchronously to avoid threading issues
+    # In production, use Celery which handles this properly
+    use_threading = os.getenv('USE_THREADING', 'false').lower() == 'true'
     
     def transcribe():
         try:
@@ -224,8 +236,10 @@ def process_transcription_direct(job_id: str, file_path: str, model: str = "open
                     
                 except Exception as e:
                     error_msg = f"Analysis failed: {str(e)}"
-                    update_job_status(job_id, JobStatus.FAILED, error=error_msg)
-                    return
+                    jobs_db[job_id]["error"] = error_msg
+                    print(f"Analysis error for job {job_id}: {e}")
+                    import traceback
+                    traceback.print_exc()
             
             # Update with success
             if model == "openai-whisper":
@@ -239,11 +253,18 @@ def process_transcription_direct(job_id: str, file_path: str, model: str = "open
                 
         except Exception as e:
             error_msg = f"Processing failed: {str(e)}"
+            print(f"Processing error for job {job_id}: {e}")
+            import traceback
+            traceback.print_exc()
             update_job_status(job_id, JobStatus.FAILED, error=error_msg)
     
-    # Run transcription in background thread
-    thread = threading.Thread(target=transcribe, daemon=True)
-    thread.start()
+    if use_threading:
+        # Run in background thread (can be problematic with environment variables)
+        thread = threading.Thread(target=transcribe, daemon=True)
+        thread.start()
+    else:
+        # Run synchronously for reliable development testing
+        transcribe()
 
 if __name__ == "__main__":
     import uvicorn

@@ -10,6 +10,14 @@ import json
 import logging
 from datetime import datetime
 
+# Apply fakeredis patch for local development
+try:
+    import sys
+    sys.path.append('..')
+    import fakeredis_patch
+except ImportError:
+    pass
+
 logger = logging.getLogger(__name__)
 
 # Initialize Celery
