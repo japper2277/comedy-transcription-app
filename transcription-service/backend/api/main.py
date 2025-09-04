@@ -363,20 +363,20 @@ def process_transcription_direct(job_id: str, file_path: str, model: str = "open
                     
                     model_client = genai.GenerativeModel('gemini-2.0-flash-exp')
                     
-                    # Use file content for analysis-only mode
+                    # Get transcript for analysis
                     if model == "gemini-analysis-only":
-                        # Handle both GCS and local file paths
-                        stored_file_path = jobs_db[job_id]["file_path"]
-                        
-                        if GCS_AVAILABLE and stored_file_path.startswith("uploads/"):
-                            # Download from GCS
-                            bucket = storage_client.bucket(settings.gcs_bucket_name)
-                            blob = bucket.blob(stored_file_path)
-                            transcript_for_analysis = blob.download_as_text()
-                        else:
-                            # Read from local file
-                            with open(stored_file_path, 'r', encoding='utf-8') as f:
-                                transcript_for_analysis = f.read()
+                        # For analysis-only mode, check if job already has a transcript result
+                        existing_result = jobs_db[job_id].get("result", "")
+                        if not existing_result or len(existing_result.strip()) < 50:
+                            error_msg = "No existing transcript found for analysis. Please upload with transcription first."
+                            jobs_db[job_id]["analysis"] = {
+                                "success": False,
+                                "analysis": None,
+                                "error": error_msg
+                            }
+                            print(f"Analysis failed for job {job_id}: {error_msg}")
+                            return
+                        transcript_for_analysis = existing_result
                     else:
                         transcript_for_analysis = result.get("transcript", "")
                     

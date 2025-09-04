@@ -8,8 +8,8 @@ class GeminiClient:
         # Get API key from parameter or environment
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
         
-        # Enable mock mode if no API key
-        self.mock_mode = not self.api_key
+        # Enable mock mode if no API key or explicitly set to "test"  
+        self.mock_mode = not self.api_key or self.api_key == "test"
         
         if not self.mock_mode:
             # Using google-generativeai library instead of direct HTTP requests
