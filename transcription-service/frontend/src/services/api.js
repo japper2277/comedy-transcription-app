@@ -6,7 +6,11 @@ const api = axios.create({
   baseURL: API_BASE,
   headers: {
     'Content-Type': 'application/json',
+    'Cache-Control': 'no-cache, no-store, must-revalidate',
+    'Pragma': 'no-cache',
+    'Expires': '0'
   },
+  timeout: 30000, // 30 second timeout
 });
 
 export const transcriptionAPI = {
@@ -45,7 +49,19 @@ export const transcriptionAPI = {
       return response.data;
     } catch (error) {
       console.error('FRONTEND: Upload failed:', error.response?.data || error.message);
-      throw error;
+      
+      // Provide more helpful error messages
+      if (error.code === 'ECONNABORTED') {
+        throw new Error('Upload timeout - please try a smaller file or check your connection');
+      } else if (error.response?.status === 413) {
+        throw new Error('File too large - please use a file smaller than 25MB');
+      } else if (error.response?.status === 415) {
+        throw new Error('Unsupported file type - please use MP3, WAV, M4A, FLAC, MP4, or WebM');
+      } else if (error.response?.data?.detail) {
+        throw new Error(error.response.data.detail);
+      } else {
+        throw new Error(`Upload failed: ${error.message}`);
+      }
     }
   },
 
@@ -65,17 +81,34 @@ export const transcriptionAPI = {
   runGeminiAnalysis: async (jobId, setList = '', customPrompt = '') => {
     console.log('FRONTEND: Running Gemini analysis for job:', jobId);
     try {
-      const response = await api.post('/v1/gemini-analysis', {
-        job_id: jobId,
-        set_list: setList,
-        custom_prompt: customPrompt
+      const formData = new FormData();
+      formData.append('job_id', jobId);
+      formData.append('set_list', setList);
+      formData.append('custom_prompt', customPrompt);
+
+      const response = await api.post('/v1/gemini-analysis', formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
       });
       console.log('FRONTEND: Gemini analysis successful!', response.data);
       return response.data;
     } catch (error) {
       console.error('FRONTEND: Gemini analysis failed:', error.message);
       console.error('   Error details:', error.response?.data || error);
-      throw error;
+      
+      // Provide more helpful error messages
+      if (error.code === 'ECONNABORTED') {
+        throw new Error('Analysis timeout - the analysis is taking too long, please try again');
+      } else if (error.response?.status === 400) {
+        throw new Error(error.response.data.detail || 'Invalid request - please check your input');
+      } else if (error.response?.status === 500) {
+        throw new Error('Analysis service error - please try again later');
+      } else if (error.response?.data?.detail) {
+        throw new Error(error.response.data.detail);
+      } else {
+        throw new Error(`Analysis failed: ${error.message}`);
+      }
     }
   },
 

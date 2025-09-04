@@ -41,6 +41,9 @@ class Settings:
         # CORS Configuration
         self.environment = os.getenv("ENVIRONMENT", "development")
         self.cors_origins = self._get_cors_origins()
+        
+        # Validate API keys on startup
+        self._validate_api_keys()
     
     def _get_cors_origins(self):
         """Get CORS origins based on environment"""
@@ -76,5 +79,35 @@ class Settings:
                 "http://127.0.0.1:3005",
                 "http://127.0.0.1:5173"
             ]
+    
+    def _validate_api_keys(self):
+        """Validate API keys on startup and provide helpful error messages"""
+        print("🔑 Validating API keys...")
+        
+        # Check OpenAI API key
+        if not self.openai_api_key:
+            print("⚠️  WARNING: OPENAI_API_KEY not set - will use mock mode")
+        elif self.openai_api_key == "test":
+            print("🧪 INFO: Using mock mode for OpenAI (OPENAI_API_KEY=test)")
+        elif not self.openai_api_key.startswith("sk-"):
+            print("⚠️  WARNING: OPENAI_API_KEY doesn't look like a valid key (should start with 'sk-')")
+        else:
+            print("✅ OpenAI API key configured")
+        
+        # Check Gemini API key
+        if not self.gemini_api_key:
+            print("❌ ERROR: GEMINI_API_KEY not set - Gemini analysis will fail")
+        elif len(self.gemini_api_key) < 20:
+            print("⚠️  WARNING: GEMINI_API_KEY seems too short - may be invalid")
+        else:
+            print("✅ Gemini API key configured")
+        
+        # Check Google Cloud settings
+        if self.gcs_bucket_name:
+            print("✅ Google Cloud Storage bucket configured")
+        else:
+            print("ℹ️  INFO: No GCS bucket configured - using local storage")
+        
+        print("🔑 API key validation complete")
 
 settings = Settings()

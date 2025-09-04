@@ -34,7 +34,8 @@ class WhisperClient:
                 transcript = self.client.audio.transcriptions.create(
                     model="whisper-1",
                     file=audio_file,
-                    response_format="text"
+                    response_format="text",
+                    timeout=120  # 2 minutes timeout
                 )
                 return transcript
                 
@@ -51,7 +52,8 @@ class WhisperClient:
                     model="whisper-1",
                     file=audio_file,
                     response_format="verbose_json",
-                    timestamp_granularities=["word"]
+                    timestamp_granularities=["word"],
+                    timeout=120  # 2 minutes timeout
                 )
                 return {
                     "text": transcript.text,

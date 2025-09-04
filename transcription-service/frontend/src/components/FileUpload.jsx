@@ -111,11 +111,22 @@ const FileUpload = ({ onJobCreated }) => {
             />
             <span>Whisper + Gemini Flash 2.0 (Transcription + Comedy Analysis)</span>
           </label>
+          <label className="model-option">
+            <input
+              type="radio"
+              name="model"
+              value="gemini-analysis-only"
+              checked={model === 'gemini-analysis-only'}
+              onChange={(e) => setModel(e.target.value)}
+              disabled={uploading}
+            />
+            <span>Gemini Analysis Only (For existing transcripts)</span>
+          </label>
         </div>
       </div>
 
       {/* Analysis Options - only show when Gemini is selected */}
-      {model === 'whisper-plus-gemini' && (
+      {(model === 'whisper-plus-gemini' || model === 'gemini-analysis-only') && (
         <div className="analysis-options">
           <h3>Comedy Analysis Options</h3>
           <div className="form-group">

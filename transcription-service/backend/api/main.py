@@ -33,7 +33,7 @@ app = FastAPI(title="AI Transcription Service", version="1.0.0")
 # CORS middleware for React frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173"],
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -174,6 +174,52 @@ async def list_jobs():
     """
     return {"jobs": list(jobs_db.values())}
 
+# Debug endpoints for troubleshooting
+@app.get("/debug/cors")
+async def debug_cors():
+    """
+    Debug CORS configuration
+    """
+    return {
+        "cors_origins": settings.cors_origins,
+        "environment": settings.environment,
+        "allowed_origins": settings.cors_origins
+    }
+
+@app.get("/debug/config")
+async def debug_config():
+    """
+    Debug configuration (without sensitive data)
+    """
+    return {
+        "environment": settings.environment,
+        "api_host": settings.api_host,
+        "api_port": settings.api_port,
+        "gcs_available": GCS_AVAILABLE,
+        "celery_available": CELERY_AVAILABLE,
+        "openai_configured": bool(settings.openai_api_key),
+        "openai_mock_mode": settings.openai_api_key == "test",
+        "gemini_configured": bool(settings.gemini_api_key),
+        "gcs_bucket_configured": bool(settings.gcs_bucket_name)
+    }
+
+@app.get("/debug/processes")
+async def debug_processes():
+    """
+    Debug process information
+    """
+    import psutil
+    import os
+    
+    return {
+        "process_id": os.getpid(),
+        "process_name": psutil.Process().name(),
+        "memory_usage": psutil.Process().memory_info().rss / 1024 / 1024,  # MB
+        "cpu_percent": psutil.Process().cpu_percent(),
+        "active_jobs": len([job for job in jobs_db.values() if job["status"] in ["queued", "processing"]]),
+        "total_jobs": len(jobs_db)
+    }
+
 @app.post("/v1/gemini-analysis")
 async def run_gemini_analysis(
     job_id: str = Form(...),
@@ -192,6 +238,14 @@ async def run_gemini_analysis(
     if not job.get("result"):
         raise HTTPException(status_code=400, detail="No transcript available for analysis")
     
+    # Check if transcript is too short for meaningful analysis
+    transcript_text = job.get("result", "").strip()
+    if len(transcript_text) < 50:
+        raise HTTPException(
+            status_code=400, 
+            detail="Transcript too short for meaningful comedy analysis (minimum 50 characters)"
+        )
+    
     try:
         # Update status to processing
         jobs_db[job_id]["status"] = JobStatus.PROCESSING
@@ -202,37 +256,55 @@ async def run_gemini_analysis(
         
         model_client = genai.GenerativeModel('gemini-2.0-flash-exp')
         
-        prompt = f"""Analyze this comedy performance transcript and provide detailed feedback:
+        prompt_instruction = "You are a professional comedy show organizer. Analyze this transcript and perform the following tasks:\n"
+        if set_list and set_list.strip():
+            prompt_instruction += f"1. Match segments of the transcript to these bits from the provided set list:\n{set_list}\n   Label these matched segments as '**Joke: [Matched Set List Title]**'.\n"
+            prompt_instruction += "2. Identify any other structured comedy bits in the transcript that aren't in the set list, and for each one, generate a concise descriptive title (3–5 words) based on its content, then label the segment as **NEW BIT: [Descriptive Title]**.\n"
+            prompt_instruction += "3. For any short, unrelated comments or brief audience interactions that are not part of a structured joke or new bit, label them as '**Riff**'.\n"
+        else:
+            prompt_instruction += "1. Identify structured comedy bits in the transcript, and for each one, generate a concise descriptive title (3–5 words) based on its content, then label the segment as **NEW BIT: [Descriptive Title]**.\n"
+            prompt_instruction += "2. For any short, unrelated comments or brief audience interactions that are not part of a structured joke or new bit, label them as '**Riff**'.\n"
 
-Transcript: {job["result"]}
-Set List: {set_list}
-Custom Instructions: {custom_prompt}
+        prompt_instruction += """
+Formatting Requirements:
+- IMPORTANT: You MUST return the *entire original transcript text* with your labels inserted directly before the relevant segments.
+- Do NOT alter or remove any part of the original transcript text itself.
+- Maintain the original sequence of the transcript.
+- Do not add any introductory or concluding remarks, only the labeled transcript.
+"""
 
-Please provide analysis covering:
-1. Timing and delivery
-2. Joke structure and setup/punchline effectiveness  
-3. Audience engagement and response
-4. Areas for improvement
-5. Overall performance assessment"""
+        prompt = f"{prompt_instruction}\n\nTranscript to analyze:\n{job['result']}"
         
-        response = model_client.generate_content(prompt)
+        response = model_client.generate_content(prompt, request_options={"timeout": 60})
         analysis = response.text
         
         # Update job with analysis
-        jobs_db[job_id]["analysis"] = analysis
+        jobs_db[job_id]["analysis"] = {
+            "success": True,
+            "analysis": analysis,
+            "error": None
+        }
         jobs_db[job_id]["status"] = JobStatus.COMPLETED
         jobs_db[job_id]["completed_at"] = datetime.datetime.now().isoformat()
         
         return {
             "job_id": job_id,
             "status": JobStatus.COMPLETED,
-            "analysis": analysis,
+            "analysis": {
+                "success": True,
+                "analysis": analysis,
+                "error": None
+            },
             "message": "Gemini analysis completed successfully"
         }
         
     except Exception as e:
         error_msg = f"Gemini analysis failed: {str(e)}"
-        jobs_db[job_id]["error"] = error_msg
+        jobs_db[job_id]["analysis"] = {
+            "success": False,
+            "analysis": None,
+            "error": error_msg
+        }
         jobs_db[job_id]["status"] = JobStatus.FAILED
         jobs_db[job_id]["completed_at"] = datetime.datetime.now().isoformat()
         
@@ -242,13 +314,15 @@ Please provide analysis covering:
         )
 
 # Function to update job status (called by Celery worker)
-def update_job_status(job_id: str, status: JobStatus, result: str = None, error: str = None):
+def update_job_status(job_id: str, status: JobStatus, result: str = None, error: str = None, analysis: dict = None):
     if job_id in jobs_db:
         jobs_db[job_id]["status"] = status
         if result:
             jobs_db[job_id]["result"] = result
         if error:
             jobs_db[job_id]["error"] = error
+        if analysis:
+            jobs_db[job_id]["analysis"] = analysis
         if status in [JobStatus.COMPLETED, JobStatus.FAILED]:
             jobs_db[job_id]["completed_at"] = datetime.datetime.now().isoformat()
 
@@ -306,25 +380,46 @@ def process_transcription_direct(job_id: str, file_path: str, model: str = "open
                     else:
                         transcript_for_analysis = result.get("transcript", "")
                     
-                    prompt = f"""Analyze this comedy performance transcript and provide detailed feedback:
-
-Transcript: {transcript_for_analysis}
-Set List: {set_list}
-Custom Instructions: {custom_prompt}
-
-Please provide analysis covering:
-1. Timing and delivery
-2. Joke structure and setup/punchline effectiveness  
-3. Audience engagement and response
-4. Areas for improvement
-5. Overall performance assessment"""
+                    # Validate transcript length for meaningful analysis
+                    if len(transcript_for_analysis.strip()) < 50:
+                        error_msg = "Transcript too short for meaningful comedy analysis (minimum 50 characters)"
+                        jobs_db[job_id]["analysis"] = {
+                            "success": False,
+                            "analysis": None,
+                            "error": error_msg
+                        }
+                        print(f"Analysis skipped for job {job_id}: {error_msg}")
+                        return  # Exit the function instead of continue
                     
-                    response = model_client.generate_content(prompt)
+                    prompt_instruction = "You are a professional comedy show organizer. Analyze this transcript and perform the following tasks:\n"
+                    if set_list and set_list.strip():
+                        prompt_instruction += f"1. Match segments of the transcript to these bits from the provided set list:\n{set_list}\n   Label these matched segments as '**Joke: [Matched Set List Title]**'.\n"
+                        prompt_instruction += "2. Identify any other structured comedy bits in the transcript that aren't in the set list, and for each one, generate a concise descriptive title (3–5 words) based on its content, then label the segment as **NEW BIT: [Descriptive Title]**.\n"
+                        prompt_instruction += "3. For any short, unrelated comments or brief audience interactions that are not part of a structured joke or new bit, label them as '**Riff**'.\n"
+                    else:
+                        prompt_instruction += "1. Identify structured comedy bits in the transcript, and for each one, generate a concise descriptive title (3–5 words) based on its content, then label the segment as **NEW BIT: [Descriptive Title]**.\n"
+                        prompt_instruction += "2. For any short, unrelated comments or brief audience interactions that are not part of a structured joke or new bit, label them as '**Riff**'.\n"
+
+                    prompt_instruction += """
+Formatting Requirements:
+- IMPORTANT: You MUST return the *entire original transcript text* with your labels inserted directly before the relevant segments.
+- Do NOT alter or remove any part of the original transcript text itself.
+- Maintain the original sequence of the transcript.
+- Do not add any introductory or concluding remarks, only the labeled transcript.
+"""
+
+                    prompt = f"{prompt_instruction}\n\nTranscript to analyze:\n{transcript_for_analysis}"
+                    
+                    response = model_client.generate_content(prompt, request_options={"timeout": 60})
                     result["analysis"] = response.text
                     
                 except Exception as e:
                     error_msg = f"Analysis failed: {str(e)}"
-                    jobs_db[job_id]["error"] = error_msg
+                    jobs_db[job_id]["analysis"] = {
+                        "success": False,
+                        "analysis": None,
+                        "error": error_msg
+                    }
                     print(f"Analysis error for job {job_id}: {e}")
                     import traceback
                     traceback.print_exc()
@@ -335,7 +430,11 @@ Please provide analysis covering:
             else:
                 # For Gemini models, store full result with both transcript and analysis
                 jobs_db[job_id]["result"] = result.get("transcript", "")
-                jobs_db[job_id]["analysis"] = result.get("analysis")
+                jobs_db[job_id]["analysis"] = {
+                    "success": True,
+                    "analysis": result.get("analysis"),
+                    "error": None
+                }
                 jobs_db[job_id]["status"] = JobStatus.COMPLETED
                 jobs_db[job_id]["completed_at"] = datetime.datetime.now().isoformat()
                 
@@ -353,6 +452,44 @@ Please provide analysis covering:
     else:
         # Run synchronously for reliable development testing
         transcribe()
+
+async def startup_health_checks():
+    """Perform health checks on startup"""
+    print("🏥 Performing startup health checks...")
+    
+    # Check OpenAI API connectivity (if not in mock mode)
+    if settings.openai_api_key and settings.openai_api_key != "test":
+        try:
+            from celery_worker.whisper_client import WhisperClient
+            whisper_client = WhisperClient(api_key=settings.openai_api_key)
+            print("✅ OpenAI API connectivity verified")
+        except Exception as e:
+            print(f"⚠️  WARNING: OpenAI API connectivity issue: {e}")
+    
+    # Check Gemini API connectivity
+    if settings.gemini_api_key:
+        try:
+            import google.generativeai as genai
+            genai.configure(api_key=settings.gemini_api_key)
+            # Try to list models to verify connectivity
+            models = genai.list_models()
+            print("✅ Gemini API connectivity verified")
+        except Exception as e:
+            print(f"⚠️  WARNING: Gemini API connectivity issue: {e}")
+    
+    # Check local storage
+    try:
+        os.makedirs(LOCAL_UPLOAD_DIR, exist_ok=True)
+        print("✅ Local storage directory ready")
+    except Exception as e:
+        print(f"❌ ERROR: Local storage issue: {e}")
+    
+    print("🏥 Startup health checks complete")
+
+# Add startup event
+@app.on_event("startup")
+async def startup_event():
+    await startup_health_checks()
 
 if __name__ == "__main__":
     import uvicorn

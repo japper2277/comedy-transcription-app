@@ -1,5 +1,4 @@
 import os
-import requests
 import logging
 
 logger = logging.getLogger(__name__)
@@ -13,7 +12,8 @@ class GeminiClient:
         self.mock_mode = not self.api_key
         
         if not self.mock_mode:
-            self.api_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+            # Using google-generativeai library instead of direct HTTP requests
+            pass
         
     def transcribe_audio(self, file_path: str) -> str:
         """
@@ -66,68 +66,40 @@ Custom Prompt: {"Yes" if custom_prompt.strip() else "No"}"""
             return {"success": True, "analysis": mock_analysis}
         
         try:
-            # Default comedy analysis prompt
-            default_prompt = """You are a professional comedy show organizer. Analyze this transcript and perform the following tasks:
+            # Use the same google-generativeai library as main.py for consistency
+            import google.generativeai as genai
+            genai.configure(api_key=self.api_key)
+            
+            model_client = genai.GenerativeModel('gemini-2.0-flash-exp')
+            
+            # Use the same prompt structure as main.py
+            prompt_instruction = "You are a professional comedy show organizer. Analyze this transcript and perform the following tasks:\n"
+            if set_list and set_list.strip():
+                prompt_instruction += f"1. Match segments of the transcript to these bits from the provided set list:\n{set_list}\n   Label these matched segments as '**Joke: [Matched Set List Title]**'.\n"
+                prompt_instruction += "2. Identify any other structured comedy bits in the transcript that aren't in the set list, and for each one, generate a concise descriptive title (3–5 words) based on its content, then label the segment as **NEW BIT: [Descriptive Title]**.\n"
+                prompt_instruction += "3. For any short, unrelated comments or brief audience interactions that are not part of a structured joke or new bit, label them as '**Riff**'.\n"
+            else:
+                prompt_instruction += "1. Identify structured comedy bits in the transcript, and for each one, generate a concise descriptive title (3–5 words) based on its content, then label the segment as **NEW BIT: [Descriptive Title]**.\n"
+                prompt_instruction += "2. For any short, unrelated comments or brief audience interactions that are not part of a structured joke or new bit, label them as '**Riff**'.\n"
 
-1. Match COMPLETE segments of the transcript to these bits from the provided set list:
-{set_list_text}
-Label these matched segments as '**Joke: [Matched Set List Title]**'.
-
-2. Identify any other COMPLETE structured comedy bits in the transcript that aren't in the set list, and for each one, generate a concise descriptive title (3–5 words) based on its content, then label the segment as '**NEW BIT: [Descriptive Title]**'.
-
-3. For any short, unrelated comments or brief audience interactions that are not part of a structured joke or new bit, label them as '**Riff**'.
-
-CRITICAL LABELING RULES:
-- Label ENTIRE comedy bits from setup to punchline - do NOT cut jokes in the middle
-- When you identify a joke or bit, include the COMPLETE segment including setup, development, and punchline
-- Place labels at the very beginning of each complete segment
-- Do NOT break up or interrupt the flow of individual jokes with multiple labels
-
+            prompt_instruction += """
 Formatting Requirements:
 - IMPORTANT: You MUST return the *entire original transcript text* with your labels inserted directly before the relevant segments.
 - Do NOT alter or remove any part of the original transcript text itself.
 - Maintain the original sequence of the transcript.
-- Add line breaks for better readability - break long paragraphs into shorter, readable chunks
 - Do not add any introductory or concluding remarks, only the labeled transcript.
+"""
 
-Transcript to analyze:
-{transcript}"""
-
-            # Use custom prompt if provided, otherwise use default
-            prompt_template = custom_prompt if custom_prompt.strip() else default_prompt
+            prompt = f"{prompt_instruction}\n\nTranscript to analyze:\n{transcript}"
             
-            # Format the prompt
-            set_list_text = set_list if set_list.strip() else "No set list provided."
-            full_prompt = prompt_template.format(set_list_text=set_list_text, transcript=transcript)
+            # Use custom prompt if provided
+            if custom_prompt and custom_prompt.strip():
+                prompt = custom_prompt.format(transcript=transcript, set_list=set_list)
             
-            # Prepare Gemini API request
-            headers = {
-                "Content-Type": "application/json"
-            }
+            response = model_client.generate_content(prompt, request_options={"timeout": 60})
+            analysis = response.text
             
-            payload = {
-                "contents": [{
-                    "parts": [{
-                        "text": full_prompt
-                    }]
-                }]
-            }
-            
-            # Make API call to Gemini
-            response = requests.post(
-                f"{self.api_url}?key={self.api_key}",
-                headers=headers,
-                json=payload,
-                timeout=60
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                analysis = result["candidates"][0]["content"]["parts"][0]["text"]
-                return {"success": True, "analysis": analysis}
-            else:
-                logger.error(f"Gemini API error: {response.status_code} - {response.text}")
-                return {"success": False, "error": f"API Error: {response.status_code}"}
+            return {"success": True, "analysis": analysis}
                 
         except Exception as e:
             logger.error(f"Gemini analysis error: {str(e)}")

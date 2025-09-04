@@ -6,7 +6,11 @@
       "Bash(curl:*)",
       "Bash(npm run dev:*)",
       "Bash(pip install:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(taskkill:*)",
+      "Bash(wmic process where:*)",
+      "Bash(timeout:*)",
+      "Read(/C:\\Users\\Jared\\Documents\\setlist_calendar\\set_list_calendar - Copy\\transcription-service\\backend/**)"
     ],
     "deny": [],
     "ask": []
