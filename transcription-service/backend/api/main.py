@@ -1,31 +1,71 @@
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, status
+from fastapi import FastAPI, UploadFile, File, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 import uuid
 import datetime
-from .models import TranscriptionJobResponse, JobStatusResponse, JobStatus
+from .models import TranscriptionJobResponse, JobStatusResponse, JobStatus, TranscriptionModel
 from .config import settings
+from .logging_config import setup_logging, get_logger
 import tempfile
 import os
+import redis
+from celery import Celery
 
-# Apply fakeredis patch for local development - disabled for testing
-# try:
-#     import fakeredis_patch
-# except ImportError:
-#     pass
+# Set up logging
+setup_logging(settings.environment)
+logger = get_logger("transcription_service")
 
-# Try to import Google Cloud Storage, but make it optional for local development
+# Initialize Redis connection
 try:
-    import google.cloud.storage as storage
-    GCS_AVAILABLE = True
-except ImportError:
-    GCS_AVAILABLE = False
-    storage = None
+    redis_client = redis.from_url(settings.redis_url)
+    redis_client.ping()
+    logger.info("Redis connection established")
+except Exception as e:
+    logger.error(f"Redis connection failed: {e}")
+    redis_client = None
 
-# Try to import Celery worker
+# Initialize Celery
+celery_app = Celery(
+    "transcription_worker",
+    broker=settings.redis_url,
+    backend=settings.redis_url,
+    include=["celery_worker.tasks"]
+)
+
+# Configure Celery
+celery_app.conf.update(
+    task_serializer="json",
+    accept_content=["json"],
+    result_serializer="json",
+    timezone="UTC",
+    enable_utc=True,
+    task_track_started=True,
+    task_time_limit=30 * 60,  # 30 minutes
+    task_soft_time_limit=25 * 60,  # 25 minutes
+    worker_prefetch_multiplier=1,
+    worker_max_tasks_per_child=1000,
+)
+
+# Initialize Google Cloud Storage
+try:
+    from google.cloud import storage as gcs
+    gcs_client = gcs.Client()
+    bucket_name = settings.gcs_bucket_name
+    bucket = gcs_client.bucket(bucket_name)
+    logger.info(f"GCS client initialized for bucket: {bucket_name}")
+    GCS_AVAILABLE = True
+except Exception as e:
+    logger.error(f"GCS initialization failed: {e}")
+    GCS_AVAILABLE = False
+    gcs_client = None
+    bucket = None
+
+# Import Celery tasks
 try:
     from celery_worker.tasks import process_transcription_job
-    CELERY_AVAILABLE = False  # Force direct processing for testing
-except ImportError:
+    CELERY_AVAILABLE = True
+    logger.info("Celery tasks imported successfully")
+except Exception as e:
+    logger.error(f"Failed to import Celery tasks: {e}")
     CELERY_AVAILABLE = False
 
 app = FastAPI(title="AI Transcription Service", version="1.0.0")
@@ -39,23 +79,79 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize storage client (GCS or local)
+# Initialize storage clients
+storage_client = None
+drive_client = None
+
+# Initialize Google Cloud Storage (GCS)
 if GCS_AVAILABLE:
     try:
         storage_client = storage.Client()
-    except Exception:
+        print("SUCCESS: Google Cloud Storage initialized")
+    except Exception as e:
+        print(f"WARNING: GCS authentication failed: {e}")
         GCS_AVAILABLE = False
         storage_client = None
-else:
-    storage_client = None
 
-# Simple in-memory job storage (replace with Redis/DB in production)
+# Initialize Google Drive
+if GOOGLE_DRIVE_AVAILABLE:
+    try:
+        drive_client = GoogleDriveClient()
+        print("SUCCESS: Google Drive client initialized")
+    except Exception as e:
+        print(f"WARNING: Google Drive initialization failed: {e}")
+        GOOGLE_DRIVE_AVAILABLE = False
+        drive_client = None
+
+# Redis-based job storage for production scalability
+def get_job_from_redis(job_id: str):
+    """Get job data from Redis"""
+    if not redis_client:
+        return None
+    try:
+        job_data = redis_client.get(f"job:{job_id}")
+        if job_data:
+            return json.loads(job_data)
+        return None
+    except Exception as e:
+        logger.error(f"Failed to get job {job_id} from Redis: {e}")
+        return None
+
+def save_job_to_redis(job_id: str, job_data: dict):
+    """Save job data to Redis with 1 hour TTL"""
+    if not redis_client:
+        return False
+    try:
+        redis_client.setex(f"job:{job_id}", 3600, json.dumps(job_data))
+        return True
+    except Exception as e:
+        logger.error(f"Failed to save job {job_id} to Redis: {e}")
+        return False
+
+def list_jobs_from_redis():
+    """List all jobs from Redis"""
+    if not redis_client:
+        return []
+    try:
+        job_keys = redis_client.keys("job:*")
+        jobs = []
+        for key in job_keys:
+            job_data = redis_client.get(key)
+            if job_data:
+                jobs.append(json.loads(job_data))
+        return sorted(jobs, key=lambda x: x.get("created_at", ""), reverse=True)
+    except Exception as e:
+        logger.error(f"Failed to list jobs from Redis: {e}")
+        return []
+
+# Fallback in-memory storage for development
 jobs_db = {}
 
 # Local file storage for development
 LOCAL_UPLOAD_DIR = "temp_uploads"
 if not GCS_AVAILABLE:
     os.makedirs(LOCAL_UPLOAD_DIR, exist_ok=True)
+    print(f"INFO: Using local file storage: {LOCAL_UPLOAD_DIR}")
 
 @app.get("/")
 async def root():
@@ -63,23 +159,89 @@ async def root():
 
 @app.get("/health")
 async def health_check():
+    logger.info("Health check requested")
     return {"status": "healthy", "timestamp": datetime.datetime.now().isoformat()}
+
+@app.get("/debug/cors")
+async def debug_cors():
+    """Debug endpoint to check CORS configuration"""
+    return {
+        "cors_origins": settings.cors_origins,
+        "environment": settings.environment,
+        "timestamp": datetime.datetime.now().isoformat()
+    }
+
+@app.get("/debug/processes")
+async def debug_processes():
+    """Debug endpoint to check if multiple processes are running"""
+    import psutil
+    import os
+    
+    current_pid = os.getpid()
+    python_processes = []
+    
+    for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+        try:
+            if proc.info['name'] == 'python.exe' and proc.info['cmdline']:
+                cmdline = ' '.join(proc.info['cmdline'])
+                if 'uvicorn' in cmdline and 'api.main:app' in cmdline:
+                    python_processes.append({
+                        'pid': proc.info['pid'],
+                        'cmdline': cmdline,
+                        'is_current': proc.info['pid'] == current_pid
+                    })
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    
+    return {
+        "current_pid": current_pid,
+        "backend_processes": python_processes,
+        "process_count": len(python_processes),
+        "timestamp": datetime.datetime.now().isoformat()
+    }
+
+@app.get("/debug/config")
+async def debug_config():
+    """Debug endpoint to check configuration"""
+    return {
+        "api_host": settings.api_host,
+        "api_port": settings.api_port,
+        "environment": settings.environment,
+        "cors_origins_count": len(settings.cors_origins),
+        "has_openai_key": bool(settings.openai_api_key),
+        "has_gemini_key": bool(settings.gemini_api_key),
+        "timestamp": datetime.datetime.now().isoformat()
+    }
 
 @app.post("/v1/transcripts", status_code=status.HTTP_202_ACCEPTED, response_model=TranscriptionJobResponse)
 async def create_transcription_job(
     file: UploadFile = File(...),
-    model: str = Form("openai-whisper"),
-    set_list: str = Form(""),
-    custom_prompt: str = Form("")
+    model: str = "openai-whisper",
+    set_list: str = "",
+    custom_prompt: str = ""
 ):
     """
-    Upload audio file and create transcription job
+    Upload audio file and create transcription job with model selection
     """
+    # Convert string model to enum
+    try:
+        model_enum = TranscriptionModel(model)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid model: {model}. Valid models: {[m.value for m in TranscriptionModel]}")
+    
+    print(f"BACKEND DEBUG - New job request:")
+    print(f"   File: {file.filename}")
+    print(f"   Model: {model} -> {model_enum} (type: {type(model_enum)})")
+    print(f"   Set list: {len(set_list)} chars")
+    print(f"   Custom prompt: {len(custom_prompt)} chars")
+    print(f"   Gemini API key configured: {'YES' if settings.gemini_api_key else 'NO'}")
+    print(f"   Is whisper-plus-gemini: {model_enum == TranscriptionModel.WHISPER_PLUS_GEMINI}")
+    
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file provided")
     
     # Validate file type
-    allowed_extensions = {'.mp3', '.wav', '.m4a', '.flac', '.mp4', '.webm', '.txt'}
+    allowed_extensions = {'.mp3', '.wav', '.m4a', '.flac', '.mp4', '.webm'}
     file_ext = '.' + file.filename.split('.')[-1].lower()
     if file_ext not in allowed_extensions:
         raise HTTPException(
@@ -92,48 +254,80 @@ async def create_transcription_job(
     file_key = f"uploads/{job_id}-{file.filename}"
     
     try:
-        # Store file (GCS or local) - stream directly without reading into memory
-        if GCS_AVAILABLE:
-            # Stream upload to Google Cloud Storage
-            bucket = storage_client.bucket(settings.gcs_bucket_name)
-            blob = bucket.blob(file_key)
-            blob.upload_from_file(file.file)
-            file_path = file_key  # GCS path
+        # Read file contents
+        contents = await file.read()
+        file_storage_type = None
+        
+        # Declare globals for modification
+        global GOOGLE_DRIVE_AVAILABLE, GCS_AVAILABLE
+        
+        # Upload to Google Cloud Storage (production-first approach)
+        if GCS_AVAILABLE and bucket:
+            try:
+                blob = bucket.blob(file_key)
+                blob.upload_from_string(contents, content_type=file.content_type or 'application/octet-stream')
+                file_path = file_key  # GCS path
+                file_storage_type = "gcs"
+                logger.info(f"File uploaded to GCS: gs://{bucket_name}/{file_key}")
+            except Exception as e:
+                logger.error(f"GCS upload failed: {e}")
+                raise HTTPException(status_code=500, detail=f"File storage failed: {str(e)}")
         else:
-            # Stream to local storage
+            # Fallback for development
+            os.makedirs(LOCAL_UPLOAD_DIR, exist_ok=True)
             file_path = os.path.join(LOCAL_UPLOAD_DIR, f"{job_id}-{file.filename}")
-            contents = await file.read()
             with open(file_path, "wb") as f:
                 f.write(contents)
+            file_storage_type = "local"
+            logger.info(f"File saved locally: {file_path}")
         
-        # Store job info
-        jobs_db[job_id] = {
+        # Create job record
+        job_data = {
             "job_id": job_id,
-            "status": JobStatus.QUEUED,
-            "file_key": file_key,
-            "file_path": file_path,
+            "status": "queued",
             "filename": file.filename,
+            "file_key": file_key if file_storage_type == "gcs" else file_path,
+            "storage_type": file_storage_type,
+            "model": model,
+            "set_list": set_list,
+            "custom_prompt": custom_prompt,
             "created_at": datetime.datetime.now().isoformat(),
+            "updated_at": datetime.datetime.now().isoformat(),
+            "progress": 0,
+            "message": "Job queued",
             "result": None,
             "error": None
         }
         
-        # Process transcription (Celery or direct)
-        if CELERY_AVAILABLE:
-            # Pass the correct parameters to match worker signature
+        # Save job to Redis (or fallback to memory)
+        if redis_client:
+            save_job_to_redis(job_id, job_data)
+        else:
+            jobs_db[job_id] = job_data
+        
+        # Queue job for processing with Celery
+        if CELERY_AVAILABLE and file_storage_type == "gcs":
+            # Production: Use Celery with GCS
             task = process_transcription_job.delay(
                 job_id=job_id,
-                gcs_file_path=file_path,
+                gcs_file_path=file_key,
                 filename=file.filename,
                 model=model,
                 set_list=set_list,
                 custom_prompt=custom_prompt
             )
-            message = f"Transcription job queued successfully (model: {model})"
+            message = "Transcription job queued for processing"
+            logger.info(f"Job {job_id} queued with Celery task {task.id}")
         else:
-            # Direct processing for development
-            process_transcription_direct(job_id, file_path, model, set_list, custom_prompt)
-            message = f"Transcription started (direct processing, model: {model})"
+            # Development fallback: Direct processing
+            import threading
+            threading.Thread(
+                target=process_transcription_direct,
+                args=(job_id, file_path, model, set_list, custom_prompt),
+                daemon=True
+            ).start()
+            message = "Transcription started (development mode)"
+            logger.info(f"Job {job_id} started with direct processing")
         
         return TranscriptionJobResponse(
             job_id=job_id,
@@ -142,9 +336,15 @@ async def create_transcription_job(
         )
         
     except Exception as e:
+        import traceback
+        error_msg = f"Failed to process upload: {str(e)}"
+        logger.error(f"Upload error for file {file.filename}: {error_msg}")
+        logger.error(f"Full traceback: {traceback.format_exc()}")
+        print(f"ERROR: {error_msg}")
+        print(f"Full traceback: {traceback.format_exc()}")
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to process upload: {str(e)}"
+            detail=error_msg
         )
 
 @app.get("/v1/transcripts/{job_id}", response_model=JobStatusResponse)
@@ -152,16 +352,16 @@ async def get_transcription_status(job_id: str):
     """
     Get transcription job status and result
     """
-    if job_id not in jobs_db:
-        raise HTTPException(status_code=404, detail="Job not found")
+    # Try Redis first, fallback to in-memory
+    job = get_job_from_redis(job_id) if redis_client else jobs_db.get(job_id)
     
-    job = jobs_db[job_id]
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
     
     return JobStatusResponse(
         job_id=job_id,
         status=job["status"],
         result=job.get("result"),
-        analysis=job.get("analysis"),
         error=job.get("error"),
         created_at=job["created_at"],
         completed_at=job.get("completed_at")
@@ -170,326 +370,258 @@ async def get_transcription_status(job_id: str):
 @app.get("/v1/jobs")
 async def list_jobs():
     """
-    List all transcription jobs (for development)
+    List all transcription jobs
     """
-    return {"jobs": list(jobs_db.values())}
+    # Try Redis first, fallback to in-memory
+    jobs = list_jobs_from_redis() if redis_client else list(jobs_db.values())
+    return {"jobs": jobs}
 
-# Debug endpoints for troubleshooting
-@app.get("/debug/cors")
-async def debug_cors():
-    """
-    Debug CORS configuration
-    """
-    return {
-        "cors_origins": settings.cors_origins,
-        "environment": settings.environment,
-        "allowed_origins": settings.cors_origins
-    }
+from pydantic import BaseModel
 
-@app.get("/debug/config")
-async def debug_config():
-    """
-    Debug configuration (without sensitive data)
-    """
-    return {
-        "environment": settings.environment,
-        "api_host": settings.api_host,
-        "api_port": settings.api_port,
-        "gcs_available": GCS_AVAILABLE,
-        "celery_available": CELERY_AVAILABLE,
-        "openai_configured": bool(settings.openai_api_key),
-        "openai_mock_mode": settings.openai_api_key == "test",
-        "gemini_configured": bool(settings.gemini_api_key),
-        "gcs_bucket_configured": bool(settings.gcs_bucket_name)
-    }
-
-@app.get("/debug/processes")
-async def debug_processes():
-    """
-    Debug process information
-    """
-    import psutil
-    import os
-    
-    return {
-        "process_id": os.getpid(),
-        "process_name": psutil.Process().name(),
-        "memory_usage": psutil.Process().memory_info().rss / 1024 / 1024,  # MB
-        "cpu_percent": psutil.Process().cpu_percent(),
-        "active_jobs": len([job for job in jobs_db.values() if job["status"] in ["queued", "processing"]]),
-        "total_jobs": len(jobs_db)
-    }
+class GeminiAnalysisRequest(BaseModel):
+    job_id: str
+    set_list: str = ""
+    custom_prompt: str = ""
 
 @app.post("/v1/gemini-analysis")
-async def run_gemini_analysis(
-    job_id: str = Form(...),
-    set_list: str = Form(""),
-    custom_prompt: str = Form("")
-):
+async def run_gemini_analysis(request: GeminiAnalysisRequest):
     """
-    Run Gemini analysis on an existing transcription job
+    Run Gemini analysis on an existing transcription
     """
-    if job_id not in jobs_db:
+    print(f"BACKEND: Running Gemini analysis for job {request.job_id}")
+    
+    if request.job_id not in jobs_db:
         raise HTTPException(status_code=404, detail="Job not found")
     
-    job = jobs_db[job_id]
+    job = jobs_db[request.job_id]
     
-    # Check if job has a transcript
+    if job["status"] != JobStatus.COMPLETED:
+        raise HTTPException(status_code=400, detail="Job must be completed to run analysis")
+    
     if not job.get("result"):
         raise HTTPException(status_code=400, detail="No transcript available for analysis")
     
-    # Check if transcript is too short for meaningful analysis
-    transcript_text = job.get("result", "").strip()
-    if len(transcript_text) < 50:
-        raise HTTPException(
-            status_code=400, 
-            detail="Transcript too short for meaningful comedy analysis (minimum 50 characters)"
-        )
+    transcript = job["result"]
     
     try:
-        # Update status to processing
-        jobs_db[job_id]["status"] = JobStatus.PROCESSING
+        from celery_worker.gemini_client import GeminiClient
+        gemini_client = GeminiClient(api_key=settings.gemini_api_key)
         
-        # Run Gemini analysis
-        import google.generativeai as genai
-        genai.configure(api_key=settings.gemini_api_key)
+        print(f"BACKEND: Analyzing transcript ({len(transcript)} chars)")
+        print(f"BACKEND: Set list: {len(request.set_list)} chars")
+        print(f"BACKEND: Custom prompt: {len(request.custom_prompt)} chars")
         
-        model_client = genai.GenerativeModel('gemini-2.0-flash-exp')
+        analysis_result = gemini_client.analyze_transcript(transcript, request.set_list, request.custom_prompt)
         
-        prompt_instruction = "You are a professional comedy show organizer. Analyze this transcript and perform the following tasks:\n"
-        if set_list and set_list.strip():
-            prompt_instruction += f"1. Match segments of the transcript to these bits from the provided set list:\n{set_list}\n   Label these matched segments as '**Joke: [Matched Set List Title]**'.\n"
-            prompt_instruction += "2. Identify any other structured comedy bits in the transcript that aren't in the set list, and for each one, generate a concise descriptive title (3–5 words) based on its content, then label the segment as **NEW BIT: [Descriptive Title]**.\n"
-            prompt_instruction += "3. For any short, unrelated comments or brief audience interactions that are not part of a structured joke or new bit, label them as '**Riff**'.\n"
-        else:
-            prompt_instruction += "1. Identify structured comedy bits in the transcript, and for each one, generate a concise descriptive title (3–5 words) based on its content, then label the segment as **NEW BIT: [Descriptive Title]**.\n"
-            prompt_instruction += "2. For any short, unrelated comments or brief audience interactions that are not part of a structured joke or new bit, label them as '**Riff**'.\n"
-
-        prompt_instruction += """
-Formatting Requirements:
-- IMPORTANT: You MUST return the *entire original transcript text* with your labels inserted directly before the relevant segments.
-- Do NOT alter or remove any part of the original transcript text itself.
-- Maintain the original sequence of the transcript.
-- Do not add any introductory or concluding remarks, only the labeled transcript.
-"""
-
-        prompt = f"{prompt_instruction}\n\nTranscript to analyze:\n{job['result']}"
+        # Store analysis result in job
+        jobs_db[request.job_id]["analysis"] = analysis_result
         
-        response = model_client.generate_content(prompt, request_options={"timeout": 60})
-        analysis = response.text
-        
-        # Update job with analysis
-        jobs_db[job_id]["analysis"] = {
-            "success": True,
-            "analysis": analysis,
-            "error": None
-        }
-        jobs_db[job_id]["status"] = JobStatus.COMPLETED
-        jobs_db[job_id]["completed_at"] = datetime.datetime.now().isoformat()
-        
-        return {
-            "job_id": job_id,
-            "status": JobStatus.COMPLETED,
-            "analysis": {
-                "success": True,
-                "analysis": analysis,
-                "error": None
-            },
-            "message": "Gemini analysis completed successfully"
-        }
+        print(f"SUCCESS: Gemini analysis completed for job {request.job_id}")
+        return analysis_result
         
     except Exception as e:
         error_msg = f"Gemini analysis failed: {str(e)}"
-        jobs_db[job_id]["analysis"] = {
-            "success": False,
-            "analysis": None,
-            "error": error_msg
-        }
-        jobs_db[job_id]["status"] = JobStatus.FAILED
-        jobs_db[job_id]["completed_at"] = datetime.datetime.now().isoformat()
-        
-        raise HTTPException(
-            status_code=500,
-            detail=error_msg
-        )
+        print(f"ERROR: {error_msg}")
+        raise HTTPException(status_code=500, detail=error_msg)
 
 # Function to update job status (called by Celery worker)
-def update_job_status(job_id: str, status: JobStatus, result: str = None, error: str = None, analysis: dict = None):
+def get_file_for_transcription(job_id: str):
+    """
+    Get file content for transcription based on storage type
+    Returns: (file_path, cleanup_function)
+    """
+    if job_id not in jobs_db:
+        raise ValueError(f"Job {job_id} not found")
+    
+    job = jobs_db[job_id]
+    storage_type = job.get("storage_type", "local")
+    file_path = job["file_path"]
+    
+    if storage_type == "google_drive":
+        # Download from Google Drive to temp file
+        try:
+            file_content = drive_client.download_file(file_path)  # file_path is the Drive file ID
+            temp_file_path = f"temp_{job_id}_{job['filename']}"
+            with open(temp_file_path, "wb") as f:
+                f.write(file_content)
+            
+            def cleanup():
+                try:
+                    os.remove(temp_file_path)
+                except:
+                    pass
+            
+            return temp_file_path, cleanup
+            
+        except Exception as e:
+            raise Exception(f"Failed to download file from Google Drive: {e}")
+    
+    elif storage_type == "gcs":
+        # Download from GCS to temp file  
+        try:
+            bucket = storage_client.bucket(settings.gcs_bucket_name)
+            blob = bucket.blob(file_path)
+            temp_file_path = f"temp_{job_id}_{job['filename']}"
+            blob.download_to_filename(temp_file_path)
+            
+            def cleanup():
+                try:
+                    os.remove(temp_file_path)
+                except:
+                    pass
+            
+            return temp_file_path, cleanup
+            
+        except Exception as e:
+            raise Exception(f"Failed to download file from GCS: {e}")
+    
+    else:  # local storage
+        # File is already local, no cleanup needed
+        def no_cleanup():
+            pass
+        return file_path, no_cleanup
+
+def update_job_status(job_id: str, status: JobStatus, result: str = None, error: str = None):
     if job_id in jobs_db:
         jobs_db[job_id]["status"] = status
         if result:
             jobs_db[job_id]["result"] = result
         if error:
             jobs_db[job_id]["error"] = error
-        if analysis:
-            jobs_db[job_id]["analysis"] = analysis
         if status in [JobStatus.COMPLETED, JobStatus.FAILED]:
             jobs_db[job_id]["completed_at"] = datetime.datetime.now().isoformat()
 
-# Direct transcription processing for development (without Celery)
-def process_transcription_direct(job_id: str, file_path: str, model: str = "openai-whisper", set_list: str = "", custom_prompt: str = ""):
+# Direct transcription processing for development (without Celery)  
+def process_transcription_direct(job_id: str, file_path: str, model: TranscriptionModel, set_list: str = "", custom_prompt: str = ""):
+    """
+    Process transcription directly without Celery (for development)
+    Handles local files, Google Drive files, and GCS files
+    """
     """Process transcription directly without Celery (for development)"""
     import threading
-    import os
-    
-    # For development, run synchronously to avoid threading issues
-    # In production, use Celery which handles this properly
-    use_threading = os.getenv('USE_THREADING', 'false').lower() == 'true'
     
     def transcribe():
         try:
             # Update status to processing
             jobs_db[job_id]["status"] = JobStatus.PROCESSING
-            result = {}
             
-            # Transcription step
-            if model in ["openai-whisper", "whisper-plus-gemini"]:
+            transcript = None
+            analysis = None
+            
+            # Process based on selected model  
+            import sys
+            sys.stdout.flush()
+            
+            print(f"BACKEND DEBUG: Processing model = '{model}' (type: {type(model)})", flush=True)
+            print(f"BACKEND DEBUG: OPENAI_WHISPER = '{TranscriptionModel.OPENAI_WHISPER}' (type: {type(TranscriptionModel.OPENAI_WHISPER)})", flush=True)
+            print(f"BACKEND DEBUG: WHISPER_PLUS_GEMINI = '{TranscriptionModel.WHISPER_PLUS_GEMINI}' (type: {type(TranscriptionModel.WHISPER_PLUS_GEMINI)})", flush=True)
+            
+            if model == TranscriptionModel.OPENAI_WHISPER:
                 try:
-                    from celery_worker.whisper_client import WhisperClient
-                    whisper_client = WhisperClient(api_key=settings.openai_api_key)
-                    transcript = whisper_client.transcribe_audio(file_path)
-                    result["transcript"] = transcript
+                    # Get file for transcription (handles different storage types)
+                    local_file_path, cleanup_func = get_file_for_transcription(job_id)
+                    
+                    print(f"BACKEND DEBUG: Initializing WhisperClient with API key present: {'YES' if settings.openai_api_key else 'NO'}")
+                    
+                    # Check if we should use mock mode for testing
+                    if not settings.openai_api_key or settings.openai_api_key == "test":
+                        print("BACKEND DEBUG: Using mock transcription mode (no valid API key)")
+                        transcript = """[MOCK COMEDY TRANSCRIPTION]
+
+Good evening everyone! So I was at the grocery store yesterday, and this lady in front of me had like 47 items in the express lane. The sign says "10 items or less" but apparently math is optional now. I'm standing there doing mental calculations like I'm preparing for the SATs.
+
+And you know what really gets me? People who say "I could care less." That means you DO care! At least a little bit! The phrase is "I COULDN'T care less!" If you could care less, then you're admitting there's room for less caring in your emotional spectrum.
+
+Speaking of things that annoy me - why do they call it rush hour when nobody's moving? It should be called "park hour" or "contemplate your life choices hour."
+
+[Audience laughter]
+
+But seriously folks, technology these days... My phone knows everything about me. It knows where I go, what I buy, who I call. But ask it to understand me when I say "Call Mom" and suddenly it's like I'm speaking ancient Aramaic.
+
+Thank you, you've been a wonderful audience!
+
+[End of mock transcription - uploaded file: """ + jobs_db[job_id]['filename'] + """]"""
+                        cleanup_func()
+                        print(f"SUCCESS: Mock transcription completed for job {job_id}")
+                    else:
+                        from celery_worker.whisper_client import WhisperClient
+                        whisper_client = WhisperClient(api_key=settings.openai_api_key)
+                        
+                        print(f"BACKEND DEBUG: Starting transcription for file: {local_file_path}")
+                        transcript = whisper_client.transcribe_audio(local_file_path)
+                        
+                        # Clean up temp file if needed
+                        cleanup_func()
+                        
+                        print(f"SUCCESS: OpenAI Whisper transcription completed for job {job_id}")
                     
                 except Exception as e:
-                    error_msg = f"Transcription failed: {str(e)}"
+                    import traceback
+                    error_msg = f"OpenAI Whisper transcription failed: {str(e)}"
+                    print(f"ERROR: {error_msg}")
+                    print(f"Full traceback: {traceback.format_exc()}")
                     update_job_status(job_id, JobStatus.FAILED, error=error_msg)
                     return
-            
-            # Analysis step - Direct Gemini implementation
-            if model in ["whisper-plus-gemini", "gemini-analysis-only"]:
+                    
+            elif model == TranscriptionModel.WHISPER_PLUS_GEMINI:
                 try:
-                    import google.generativeai as genai
-                    genai.configure(api_key=settings.gemini_api_key)
+                    # Get file for transcription (handles different storage types)
+                    local_file_path, cleanup_func = get_file_for_transcription(job_id)
                     
-                    model_client = genai.GenerativeModel('gemini-2.0-flash-exp')
+                    # First transcribe with Whisper
+                    from celery_worker.whisper_client import WhisperClient
+                    whisper_client = WhisperClient(api_key=settings.openai_api_key)
+                    transcript = whisper_client.transcribe_audio(local_file_path)
                     
-                    # Get transcript for analysis
-                    if model == "gemini-analysis-only":
-                        # For analysis-only mode, check if job already has a transcript result
-                        existing_result = jobs_db[job_id].get("result", "")
-                        if not existing_result or len(existing_result.strip()) < 50:
-                            error_msg = "No existing transcript found for analysis. Please upload with transcription first."
-                            jobs_db[job_id]["analysis"] = {
-                                "success": False,
-                                "analysis": None,
-                                "error": error_msg
-                            }
-                            print(f"Analysis failed for job {job_id}: {error_msg}")
-                            return
-                        transcript_for_analysis = existing_result
-                    else:
-                        transcript_for_analysis = result.get("transcript", "")
+                    # Clean up temp file if needed
+                    cleanup_func()
                     
-                    # Validate transcript length for meaningful analysis
-                    if len(transcript_for_analysis.strip()) < 50:
-                        error_msg = "Transcript too short for meaningful comedy analysis (minimum 50 characters)"
-                        jobs_db[job_id]["analysis"] = {
-                            "success": False,
-                            "analysis": None,
-                            "error": error_msg
-                        }
-                        print(f"Analysis skipped for job {job_id}: {error_msg}")
-                        return  # Exit the function instead of continue
+                    print(f"SUCCESS: Whisper transcription completed for job {job_id}")
                     
-                    prompt_instruction = "You are a professional comedy show organizer. Analyze this transcript and perform the following tasks:\n"
-                    if set_list and set_list.strip():
-                        prompt_instruction += f"1. Match segments of the transcript to these bits from the provided set list:\n{set_list}\n   Label these matched segments as '**Joke: [Matched Set List Title]**'.\n"
-                        prompt_instruction += "2. Identify any other structured comedy bits in the transcript that aren't in the set list, and for each one, generate a concise descriptive title (3–5 words) based on its content, then label the segment as **NEW BIT: [Descriptive Title]**.\n"
-                        prompt_instruction += "3. For any short, unrelated comments or brief audience interactions that are not part of a structured joke or new bit, label them as '**Riff**'.\n"
-                    else:
-                        prompt_instruction += "1. Identify structured comedy bits in the transcript, and for each one, generate a concise descriptive title (3–5 words) based on its content, then label the segment as **NEW BIT: [Descriptive Title]**.\n"
-                        prompt_instruction += "2. For any short, unrelated comments or brief audience interactions that are not part of a structured joke or new bit, label them as '**Riff**'.\n"
-
-                    prompt_instruction += """
-Formatting Requirements:
-- IMPORTANT: You MUST return the *entire original transcript text* with your labels inserted directly before the relevant segments.
-- Do NOT alter or remove any part of the original transcript text itself.
-- Maintain the original sequence of the transcript.
-- Do not add any introductory or concluding remarks, only the labeled transcript.
-"""
-
-                    prompt = f"{prompt_instruction}\n\nTranscript to analyze:\n{transcript_for_analysis}"
+                    # Then analyze with Gemini
+                    print(f"BACKEND DEBUG: Starting Gemini analysis for job {job_id}")
+                    print(f"BACKEND DEBUG: Transcript length: {len(transcript)} chars")
+                    print(f"BACKEND DEBUG: Set list length: {len(set_list)} chars")
                     
-                    response = model_client.generate_content(prompt, request_options={"timeout": 60})
-                    result["analysis"] = response.text
+                    from celery_worker.gemini_client import GeminiClient
+                    gemini_client = GeminiClient(api_key=settings.gemini_api_key)
+                    analysis_result = gemini_client.analyze_transcript(transcript, set_list, custom_prompt)
+                    analysis = analysis_result
+                    
+                    print(f"BACKEND DEBUG: Gemini response: {type(analysis_result)}")
+                    print(f"BACKEND DEBUG: Analysis result keys: {analysis_result.keys() if isinstance(analysis_result, dict) else 'Not a dict'}")
+                    print(f"SUCCESS: Gemini analysis completed for job {job_id}")
                     
                 except Exception as e:
-                    error_msg = f"Analysis failed: {str(e)}"
-                    jobs_db[job_id]["analysis"] = {
-                        "success": False,
-                        "analysis": None,
-                        "error": error_msg
-                    }
-                    print(f"Analysis error for job {job_id}: {e}")
-                    import traceback
-                    traceback.print_exc()
+                    error_msg = f"Whisper + Gemini processing failed: {str(e)}"
+                    update_job_status(job_id, JobStatus.FAILED, error=error_msg)
+                    print(f"ERROR: {error_msg}")
+                    return
+                    
+            elif model == TranscriptionModel.GEMINI_ANALYSIS:
+                # This would be for analyzing existing transcripts
+                error_msg = "Gemini-only analysis requires existing transcript. Use Whisper + Gemini instead."
+                update_job_status(job_id, JobStatus.FAILED, error=error_msg)
+                print(f"ERROR: {error_msg}")
+                return
             
             # Update with success
-            if model == "openai-whisper":
-                update_job_status(job_id, JobStatus.COMPLETED, result=result.get("transcript", ""))
-            else:
-                # For Gemini models, store full result with both transcript and analysis
-                jobs_db[job_id]["result"] = result.get("transcript", "")
-                jobs_db[job_id]["analysis"] = {
-                    "success": True,
-                    "analysis": result.get("analysis"),
-                    "error": None
-                }
-                jobs_db[job_id]["status"] = JobStatus.COMPLETED
-                jobs_db[job_id]["completed_at"] = datetime.datetime.now().isoformat()
+            jobs_db[job_id].update({
+                "status": JobStatus.COMPLETED,
+                "result": transcript,
+                "analysis": analysis,
+                "completed_at": datetime.datetime.now().isoformat()
+            })
+            print(f"SUCCESS: Job {job_id} completed successfully")
                 
         except Exception as e:
             error_msg = f"Processing failed: {str(e)}"
-            print(f"Processing error for job {job_id}: {e}")
-            import traceback
-            traceback.print_exc()
             update_job_status(job_id, JobStatus.FAILED, error=error_msg)
+            print(f"ERROR: Processing failed for job {job_id}: {error_msg}")
     
-    if use_threading:
-        # Run in background thread (can be problematic with environment variables)
-        thread = threading.Thread(target=transcribe, daemon=True)
-        thread.start()
-    else:
-        # Run synchronously for reliable development testing
-        transcribe()
-
-async def startup_health_checks():
-    """Perform health checks on startup"""
-    print("Performing startup health checks...")
-    
-    # Check OpenAI API connectivity (if not in mock mode)
-    if settings.openai_api_key and settings.openai_api_key != "test":
-        try:
-            from celery_worker.whisper_client import WhisperClient
-            whisper_client = WhisperClient(api_key=settings.openai_api_key)
-            print("OpenAI API connectivity verified")
-        except Exception as e:
-            print(f"WARNING: OpenAI API connectivity issue: {e}")
-    
-    # Check Gemini API connectivity
-    if settings.gemini_api_key:
-        try:
-            import google.generativeai as genai
-            genai.configure(api_key=settings.gemini_api_key)
-            # Try to list models to verify connectivity
-            models = genai.list_models()
-            print("Gemini API connectivity verified")
-        except Exception as e:
-            print(f"WARNING: Gemini API connectivity issue: {e}")
-    
-    # Check local storage
-    try:
-        os.makedirs(LOCAL_UPLOAD_DIR, exist_ok=True)
-        print("Local storage directory ready")
-    except Exception as e:
-        print(f"ERROR: Local storage issue: {e}")
-    
-    print("Startup health checks complete")
-
-# Add startup event
-@app.on_event("startup")
-async def startup_event():
-    await startup_health_checks()
+    # Run transcription in background thread
+    thread = threading.Thread(target=transcribe, daemon=True)
+    thread.start()
 
 if __name__ == "__main__":
     import uvicorn
