@@ -75,13 +75,13 @@ try:
                     print(f"Result field: {str(result)[:100] if result else 'None'}")
                     
                     if analysis:
-                        print(f"\n✅ ANALYSIS FOUND!")
+                        print(f"\nANALYSIS FOUND!")
                         print(f"Analysis preview: {str(analysis)[:250]}...")
                         print(f"\n🎉 SUCCESS: GEMINI ANALYSIS IS WORKING!")
-                        print("✅ The API correctly returns the analysis field!")
+                        print("The API correctly returns the analysis field!")
                         break
                     else:
-                        print(f"\n❌ NO ANALYSIS FIELD")
+                        print(f"\nNO ANALYSIS FIELD")
                         print(f"Available response fields: {list(status_data.keys())}")
                         # Print the actual response for debugging
                         print(f"Full response: {status_data}")
@@ -89,13 +89,13 @@ try:
                         
                 elif job_status == 'failed':
                     error = status_data.get('error')
-                    print(f"\n❌ JOB FAILED: {error}")
+                    print(f"\nJOB FAILED: {error}")
                     break
             else:
                 print(f"Status check failed: {status_response.status_code}")
                 break
         else:
-            print(f"\n⏱️ TIMEOUT after {attempt+1} attempts")
+            print(f"\nTIMEOUT after {attempt+1} attempts")
             # Get final status
             final_response = client.get(f'/v1/transcripts/{job_id}')
             if final_response.status_code == 200:

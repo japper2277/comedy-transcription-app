@@ -82,32 +82,32 @@ class Settings:
     
     def _validate_api_keys(self):
         """Validate API keys on startup and provide helpful error messages"""
-        print("🔑 Validating API keys...")
+        print("Validating API keys...")
         
         # Check OpenAI API key
         if not self.openai_api_key:
-            print("⚠️  WARNING: OPENAI_API_KEY not set - will use mock mode")
+            print("WARNING: OPENAI_API_KEY not set - will use mock mode")
         elif self.openai_api_key == "test":
-            print("🧪 INFO: Using mock mode for OpenAI (OPENAI_API_KEY=test)")
+            print("INFO: Using mock mode for OpenAI (OPENAI_API_KEY=test)")
         elif not self.openai_api_key.startswith("sk-"):
-            print("⚠️  WARNING: OPENAI_API_KEY doesn't look like a valid key (should start with 'sk-')")
+            print("WARNING: OPENAI_API_KEY doesn't look like a valid key (should start with 'sk-')")
         else:
-            print("✅ OpenAI API key configured")
+            print("OpenAI API key configured")
         
         # Check Gemini API key
         if not self.gemini_api_key:
-            print("❌ ERROR: GEMINI_API_KEY not set - Gemini analysis will fail")
+            print("ERROR: GEMINI_API_KEY not set - Gemini analysis will fail")
         elif len(self.gemini_api_key) < 20:
-            print("⚠️  WARNING: GEMINI_API_KEY seems too short - may be invalid")
+            print("WARNING: GEMINI_API_KEY seems too short - may be invalid")
         else:
-            print("✅ Gemini API key configured")
+            print("Gemini API key configured")
         
         # Check Google Cloud settings
         if self.gcs_bucket_name:
-            print("✅ Google Cloud Storage bucket configured")
+            print("Google Cloud Storage bucket configured")
         else:
-            print("ℹ️  INFO: No GCS bucket configured - using local storage")
+            print("INFO: No GCS bucket configured - using local storage")
         
-        print("🔑 API key validation complete")
+        print("API key validation complete")
 
 settings = Settings()

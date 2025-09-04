@@ -455,16 +455,16 @@ Formatting Requirements:
 
 async def startup_health_checks():
     """Perform health checks on startup"""
-    print("🏥 Performing startup health checks...")
+    print("Performing startup health checks...")
     
     # Check OpenAI API connectivity (if not in mock mode)
     if settings.openai_api_key and settings.openai_api_key != "test":
         try:
             from celery_worker.whisper_client import WhisperClient
             whisper_client = WhisperClient(api_key=settings.openai_api_key)
-            print("✅ OpenAI API connectivity verified")
+            print("OpenAI API connectivity verified")
         except Exception as e:
-            print(f"⚠️  WARNING: OpenAI API connectivity issue: {e}")
+            print(f"WARNING: OpenAI API connectivity issue: {e}")
     
     # Check Gemini API connectivity
     if settings.gemini_api_key:
@@ -473,18 +473,18 @@ async def startup_health_checks():
             genai.configure(api_key=settings.gemini_api_key)
             # Try to list models to verify connectivity
             models = genai.list_models()
-            print("✅ Gemini API connectivity verified")
+            print("Gemini API connectivity verified")
         except Exception as e:
-            print(f"⚠️  WARNING: Gemini API connectivity issue: {e}")
+            print(f"WARNING: Gemini API connectivity issue: {e}")
     
     # Check local storage
     try:
         os.makedirs(LOCAL_UPLOAD_DIR, exist_ok=True)
-        print("✅ Local storage directory ready")
+        print("Local storage directory ready")
     except Exception as e:
-        print(f"❌ ERROR: Local storage issue: {e}")
+        print(f"ERROR: Local storage issue: {e}")
     
-    print("🏥 Startup health checks complete")
+    print("Startup health checks complete")
 
 # Add startup event
 @app.on_event("startup")
