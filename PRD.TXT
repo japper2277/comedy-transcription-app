@@ -1,0 +1,101 @@
+Product Requirements Document: The Validation Mandate
+Author: Alex Chen, VP Product
+Version: 3.0 (FINAL)
+Date: September 4, 2025
+Status: NON-NEGOTIABLE - EXECUTE IMMEDIATELY
+
+1. Mandate Overview
+The time for building is over. The time for proving has begun.
+
+Our codebase is a theoretical asset with zero market value until it is deployed and validated against real-world conditions. This document is the four-hour, time-boxed mandate to convert our code from a liability in a private repository into a proven, data-backed asset in a public-facing environment.
+
+This is not an engineering exercise. This is a go-to-market operation. Failure is not an option.
+
+2. Team & Roles
+Alex Chen: VP, Product (Accountable for Mission Success)
+
+Kenji Tanaka: Lead, Backend & Infrastructure (Accountable for Deployment & Performance KPIs)
+
+Sofia Rossi: Lead, Frontend & UX (Accountable for User-Facing Interface)
+
+Priya Sharma: Lead, AI & Data Integration (Accountable for API Performance)
+
+Josue Perez: Lead, Security & Compliance (Accountable for Staging Environment Security)
+
+Tina Huang: Lead, Public Validation (Accountable for Narrative & Market Signal)
+
+3. Problem Statement & Mission Objectives
+Problem: We have an enterprise-grade architecture with zero real-world data. Our business case is a hypothesis.
+
+Mission: Within four hours, we will move from a state of technical readiness to operational proof. We will answer the following questions with irrefutable data:
+
+Can it deploy? Prove the infrastructure is sound by achieving a live state.
+
+Can it scale? Prove the architecture works by validating performance KPIs under load.
+
+Is it viable? Prove the business model is sound by calculating the real-world cost per job.
+
+4. Phased Execution Plan
+The following phases will be executed sequentially. The time allotments are hard limits.
+
+Phase 0: Critical Pre-Flight Fixes (Time Allotment: 15 Minutes)
+Objective: Ensure all prerequisites for deployment are met. This is a go/no-go gate for the timed execution.
+
+[PRE-0.1] Install & Configure gcloud CLI: Essential for deployment.
+
+[PRE-0.2] Replace Mock API Keys: Swap placeholders with production OpenAI/Gemini keys.
+
+[PRE-0.3] Fix Project ID Consistency: Ensure alignment between .env files and deployment scripts.
+
+[PRE-0.4] Update Performance Test Target: Modify performance_test.py to target the Cloud Run URL instead of localhost.
+
+[PRE-0.5] Mitigate Cold Starts: Update deployment scripts to set min-instances=2 to avoid a cold start cascade during the load test.
+
+
+
+Phase 1: Go-Live (Time Allotment: 30 Minutes)
+Objective: Establish a live, public-facing staging environment. This is the Proof of Life.
+
+[DEP-1.1] Execute Deployment: Run ./deploy.sh & ./deploy-worker.sh. Provision all GCP resources (Cloud Run, Redis, GCS).
+
+[DEP-1.2] Configure Live Keys: Purge all mock/test keys. Populate the environment with production-level API keys for OpenAI and Gemini.
+
+[DEP-1.3] Verify URLs: Confirm public accessibility of the FastAPI and React application URLs.
+
+Phase 2: Validation Under Load (Time Allotment: 1 Hour)
+Objective: Generate the performance and cost data that will become our core marketing assets.
+
+[VAL-2.1] Execute Load Test: Run performance_test.py against the live staging URL to simulate 100 concurrent uploads.
+
+[VAL-2.2] Generate Performance Report: Document the raw data against our mandated KPIs. This data is not for internal review; it is the source material for our public narrative.
+
+[VAL-2.3] Generate Cost Analysis: Calculate the precise, real-world cost-per-job. This is the proof point for our business model.
+
+Phase 3: Production Hardening (Time Allotment: 2 Hours)
+Objective: Transition the validated platform into a secure, monitored, and user-ready service.
+
+[PROD-3.1] Secure Environment: Implement basic API key authentication to lock down the staging environment.
+
+[PROD-3.2] Configure Monitoring: Establish live monitoring dashboards in GCP for API latency, error rates, and worker utilization.
+
+[PROD-3.3] Final UX Polish: Optimize the frontend based on live environment performance.
+
+5. Success Metrics: Public Deliverables
+The success of this mandate will be measured by the production of the following public-facing assets. These are not internal reports.
+
+DELIVERABLE 1: The "Proof of Life" Tweet: A public post from Tina Huang with the live staging URL, announcing that the platform is live.
+
+DELIVERABLE 2: The Performance Validation Blog Post: A detailed article titled "How We Built (and Broke) a Scalable AI Service: A Real-Time Performance Teardown." This will feature the P99 latency and success rate data from the load test.
+
+DELIVERABLE 3: The Cost-Analysis Video: A short YouTube video from Tina Huang titled "The Real Cost of Running a Cloud-Native SaaS," breaking down our exact cost-per-job.
+
+6. Public Communication Mandate (Lead: Tina Huang)
+The engineering work is the B-roll. The narrative is the A-roll.
+
+Narrative: We are the hyper-transparent team demonstrating a masterclass in cloud architecture and execution. We are showing, not telling, the market how to build a real product.
+
+Content Capture: The entire 4-hour process will be documented. Kenji's terminal during deployment, the GCP dashboards during the load test, Sofia's UX adjustments—all of it is content.
+
+Asset Creation: Tina's primary role during this phase is to direct the capture of this content and immediately begin packaging it into the public deliverables defined in Section 5.
+
+This is the plan. There will not be another. Execute.

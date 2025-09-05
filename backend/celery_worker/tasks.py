@@ -6,17 +6,49 @@ from .whisper_client import WhisperClient
 from .gemini_client import GeminiClient
 from google.cloud import storage as gcs
 import redis
+import fakeredis
 import json
 import logging
 from datetime import datetime
 
+# Apply fakeredis patch for local development
+try:
+    import sys
+    sys.path.append('..')
+    import fakeredis_patch
+except ImportError:
+    pass
+
 logger = logging.getLogger(__name__)
 
-# Initialize Celery
+# Initialize Celery with environment-based configuration
+def get_celery_config():
+    # Check if we're in local development mode
+    use_local_mode = (
+        os.getenv("ENVIRONMENT") == "development" or 
+        not os.getenv("REDIS_URL") or
+        os.getenv("USE_FAKE_REDIS", "false").lower() == "true"
+    )
+    
+    if use_local_mode:
+        print("CELERY: Using in-memory transport for local development")
+        return {
+            "broker": "memory://localhost/",
+            "backend": "cache+memory://"
+        }
+    else:
+        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+        print(f"CELERY: Using Redis at {redis_url}")
+        return {
+            "broker": redis_url,
+            "backend": redis_url
+        }
+
+config = get_celery_config()
 celery_app = Celery(
     "transcription_worker",
-    broker=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
-    backend=os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    broker=config["broker"],
+    backend=config["backend"]
 )
 
 # Configure Celery
@@ -35,6 +67,23 @@ celery_app.conf.update(
 
 # Initialize GCS client
 gcs_client = gcs.Client()
+
+# Helper function to get the appropriate Redis client
+def get_redis_client():
+    """Get Redis client based on environment configuration"""
+    use_local_mode = (
+        os.getenv("ENVIRONMENT") == "development" or 
+        not os.getenv("REDIS_URL") or
+        os.getenv("USE_FAKE_REDIS", "false").lower() == "true"
+    )
+    
+    if use_local_mode:
+        print("TASKS: Using FakeRedis for local development")
+        return fakeredis.FakeStrictRedis(host='localhost', port=6379, db=0)
+    else:
+        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+        print(f"TASKS: Using real Redis at {redis_url}")
+        return redis.from_url(redis_url)
 
 @celery_app.task(bind=True)
 def process_transcription_job(
@@ -59,7 +108,7 @@ def process_transcription_job(
     """
     try:
         # Update job status to processing
-        redis_client = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"))
+        redis_client = get_redis_client()
         job_data = {
             "job_id": job_id,
             "filename": filename,
@@ -155,7 +204,7 @@ def process_transcription_job(
         }
         
         try:
-            redis_client = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"))
+            redis_client = get_redis_client()
             redis_client.setex(f"job:{job_id}", 3600, json.dumps(job_data))
         except:
             pass

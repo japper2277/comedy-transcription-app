@@ -82,11 +82,12 @@ app.add_middleware(
 # Initialize storage clients
 storage_client = None
 drive_client = None
+GOOGLE_DRIVE_AVAILABLE = False  # Set to False by default, will be True if Google Drive is properly configured
 
 # Initialize Google Cloud Storage (GCS)
 if GCS_AVAILABLE:
     try:
-        storage_client = storage.Client()
+        storage_client = gcs.Client()
         print("SUCCESS: Google Cloud Storage initialized")
     except Exception as e:
         print(f"WARNING: GCS authentication failed: {e}")
@@ -212,6 +213,146 @@ async def debug_config():
         "has_gemini_key": bool(settings.gemini_api_key),
         "timestamp": datetime.datetime.now().isoformat()
     }
+
+@app.get("/debug/queue")
+async def debug_queue():
+    """Debug endpoint to check queue status and find stuck jobs"""
+    current_time = datetime.datetime.now()
+    
+    # Get all jobs from Redis or memory
+    all_jobs = list_jobs_from_redis() if redis_client else list(jobs_db.values())
+    
+    stuck_jobs = []
+    processing_jobs = []
+    recent_jobs = []
+    
+    for job in all_jobs:
+        job_status = job.get("status")
+        created_at = job.get("created_at", "")
+        updated_at = job.get("updated_at", created_at)
+        
+        # Calculate time since last update
+        try:
+            if updated_at:
+                update_time = datetime.datetime.fromisoformat(updated_at.replace('Z', '+00:00').replace('+00:00', ''))
+                minutes_since_update = (current_time - update_time).total_seconds() / 60
+            else:
+                minutes_since_update = -1
+        except:
+            minutes_since_update = -1
+        
+        job_info = {
+            "job_id": job.get("job_id"),
+            "filename": job.get("filename"),
+            "status": job_status,
+            "created_at": created_at,
+            "updated_at": updated_at,
+            "minutes_since_update": round(minutes_since_update, 1) if minutes_since_update >= 0 else "unknown",
+            "progress": job.get("progress", 0),
+            "message": job.get("message", ""),
+            "model": job.get("model", "unknown")
+        }
+        
+        # Categorize jobs
+        if job_status == "processing" and minutes_since_update > 10:  # Stuck if processing for >10 minutes
+            stuck_jobs.append(job_info)
+        elif job_status == "processing":
+            processing_jobs.append(job_info)
+        elif minutes_since_update < 60:  # Recent jobs (last hour)
+            recent_jobs.append(job_info)
+    
+    return {
+        "total_jobs": len(all_jobs),
+        "stuck_jobs": stuck_jobs,
+        "processing_jobs": processing_jobs,
+        "recent_jobs": recent_jobs[:10],  # Limit to 10 most recent
+        "storage_type": "redis" if redis_client else "memory",
+        "timestamp": current_time.isoformat()
+    }
+
+@app.post("/debug/reset-job/{job_id}")
+async def reset_stuck_job(job_id: str):
+    """Reset a stuck job back to queued status"""
+    # Get job from Redis or memory
+    job = get_job_from_redis(job_id) if redis_client else jobs_db.get(job_id)
+    
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    # Reset job status
+    job.update({
+        "status": "queued",
+        "progress": 0,
+        "message": "Job reset - ready for reprocessing",
+        "error": None,
+        "updated_at": datetime.datetime.now().isoformat()
+    })
+    
+    # Save back to storage
+    if redis_client:
+        save_job_to_redis(job_id, job)
+    else:
+        jobs_db[job_id] = job
+    
+    # Restart processing
+    file_path = job.get("file_key", job.get("file_path", ""))
+    model = TranscriptionModel(job.get("model", "openai-whisper"))
+    set_list = job.get("set_list", "")
+    custom_prompt = job.get("custom_prompt", "")
+    
+    # Restart direct processing
+    import threading
+    threading.Thread(
+        target=process_transcription_direct,
+        args=(job_id, file_path, model, set_list, custom_prompt),
+        daemon=True
+    ).start()
+    
+    return {
+        "message": f"Job {job_id} has been reset and restarted",
+        "job_status": job["status"],
+        "timestamp": datetime.datetime.now().isoformat()
+    }
+
+@app.delete("/debug/cleanup-jobs")
+async def cleanup_old_jobs():
+    """Clean up old completed/failed jobs (older than 1 hour)"""
+    current_time = datetime.datetime.now()
+    cleanup_count = 0
+    
+    if redis_client:
+        # For Redis, jobs auto-expire after 1 hour, but we can list what's there
+        all_jobs = list_jobs_from_redis()
+        return {
+            "message": "Redis jobs auto-expire after 1 hour",
+            "current_jobs": len(all_jobs),
+            "timestamp": current_time.isoformat()
+        }
+    else:
+        # For memory storage, manually clean up old jobs
+        jobs_to_remove = []
+        for job_id, job in jobs_db.items():
+            if job.get("status") in ["completed", "failed"]:
+                completed_at = job.get("completed_at")
+                if completed_at:
+                    try:
+                        completion_time = datetime.datetime.fromisoformat(completed_at)
+                        hours_since_completion = (current_time - completion_time).total_seconds() / 3600
+                        if hours_since_completion > 1:
+                            jobs_to_remove.append(job_id)
+                    except:
+                        pass
+        
+        # Remove old jobs
+        for job_id in jobs_to_remove:
+            del jobs_db[job_id]
+            cleanup_count += 1
+        
+        return {
+            "message": f"Cleaned up {cleanup_count} old jobs",
+            "remaining_jobs": len(jobs_db),
+            "timestamp": current_time.isoformat()
+        }
 
 @app.post("/v1/transcripts", status_code=status.HTTP_202_ACCEPTED, response_model=TranscriptionJobResponse)
 async def create_transcription_job(
@@ -495,15 +636,23 @@ def update_job_status(job_id: str, status: JobStatus, result: str = None, error:
 def process_transcription_direct(job_id: str, file_path: str, model: TranscriptionModel, set_list: str = "", custom_prompt: str = ""):
     """
     Process transcription directly without Celery (for development)
-    Handles local files, Google Drive files, and GCS files
+    Handles local files, Google Drive files, and GCS files with timeout protection
     """
-    """Process transcription directly without Celery (for development)"""
     import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError
     
     def transcribe():
+        cleanup_func = None
         try:
             # Update status to processing
-            jobs_db[job_id]["status"] = JobStatus.PROCESSING
+            if job_id in jobs_db:
+                jobs_db[job_id]["status"] = JobStatus.PROCESSING
+                jobs_db[job_id]["updated_at"] = datetime.datetime.now().isoformat()
+                jobs_db[job_id]["message"] = "Starting transcription..."
+            else:
+                logger.error(f"Job {job_id} not found in jobs_db during processing start")
+                return
             
             transcript = None
             analysis = None
@@ -518,6 +667,10 @@ def process_transcription_direct(job_id: str, file_path: str, model: Transcripti
             
             if model == TranscriptionModel.OPENAI_WHISPER:
                 try:
+                    # Update progress
+                    jobs_db[job_id]["message"] = "Preparing audio file..."
+                    jobs_db[job_id]["progress"] = 10
+                    
                     # Get file for transcription (handles different storage types)
                     local_file_path, cleanup_func = get_file_for_transcription(job_id)
                     
@@ -526,6 +679,14 @@ def process_transcription_direct(job_id: str, file_path: str, model: Transcripti
                     # Check if we should use mock mode for testing
                     if not settings.openai_api_key or settings.openai_api_key == "test":
                         print("BACKEND DEBUG: Using mock transcription mode (no valid API key)")
+                        
+                        # Update progress for mock processing
+                        jobs_db[job_id]["message"] = "Processing with mock transcription..."
+                        jobs_db[job_id]["progress"] = 50
+                        
+                        # Simulate processing time
+                        time.sleep(2)
+                        
                         transcript = """[MOCK COMEDY TRANSCRIPTION]
 
 Good evening everyone! So I was at the grocery store yesterday, and this lady in front of me had like 47 items in the express lane. The sign says "10 items or less" but apparently math is optional now. I'm standing there doing mental calculations like I'm preparing for the SATs.
@@ -536,22 +697,30 @@ Speaking of things that annoy me - why do they call it rush hour when nobody's m
 
 [Audience laughter]
 
-But seriously folks, technology these days... My phone knows everything about me. It knows where I go, what I buy, who I call. But ask it to understand me when I say "Call Mom" and suddenly it's like I'm speaking ancient Aramaic.
+But seriously folks, technology these days... My phone knows everything about me. It knows where I go, what I buy, who I call. But ask it to understand me when I say "Call Mom" and suddenly it's like I'm speaking ancient Aramiac.
 
 Thank you, you've been a wonderful audience!
 
 [End of mock transcription - uploaded file: """ + jobs_db[job_id]['filename'] + """]"""
-                        cleanup_func()
+                        
+                        if cleanup_func:
+                            cleanup_func()
                         print(f"SUCCESS: Mock transcription completed for job {job_id}")
                     else:
                         from celery_worker.whisper_client import WhisperClient
+                        
+                        # Update progress
+                        jobs_db[job_id]["message"] = "Transcribing with OpenAI Whisper..."
+                        jobs_db[job_id]["progress"] = 30
+                        
                         whisper_client = WhisperClient(api_key=settings.openai_api_key)
                         
                         print(f"BACKEND DEBUG: Starting transcription for file: {local_file_path}")
                         transcript = whisper_client.transcribe_audio(local_file_path)
                         
                         # Clean up temp file if needed
-                        cleanup_func()
+                        if cleanup_func:
+                            cleanup_func()
                         
                         print(f"SUCCESS: OpenAI Whisper transcription completed for job {job_id}")
                     
@@ -560,23 +729,50 @@ Thank you, you've been a wonderful audience!
                     error_msg = f"OpenAI Whisper transcription failed: {str(e)}"
                     print(f"ERROR: {error_msg}")
                     print(f"Full traceback: {traceback.format_exc()}")
+                    
+                    # Ensure cleanup happens even on error
+                    if cleanup_func:
+                        try:
+                            cleanup_func()
+                        except Exception as cleanup_error:
+                            print(f"Cleanup error: {cleanup_error}")
+                    
                     update_job_status(job_id, JobStatus.FAILED, error=error_msg)
                     return
                     
             elif model == TranscriptionModel.WHISPER_PLUS_GEMINI:
                 try:
+                    # Update progress
+                    jobs_db[job_id]["message"] = "Preparing for Whisper + Gemini processing..."
+                    jobs_db[job_id]["progress"] = 10
+                    
                     # Get file for transcription (handles different storage types)
                     local_file_path, cleanup_func = get_file_for_transcription(job_id)
                     
+                    # Update progress
+                    jobs_db[job_id]["message"] = "Transcribing with OpenAI Whisper..."
+                    jobs_db[job_id]["progress"] = 30
+                    
                     # First transcribe with Whisper
-                    from celery_worker.whisper_client import WhisperClient
-                    whisper_client = WhisperClient(api_key=settings.openai_api_key)
-                    transcript = whisper_client.transcribe_audio(local_file_path)
+                    if not settings.openai_api_key or settings.openai_api_key == "test":
+                        # Mock transcription
+                        time.sleep(2)
+                        transcript = "Mock comedy performance transcript for Gemini analysis."
+                        print("BACKEND DEBUG: Using mock transcription for Whisper + Gemini mode")
+                    else:
+                        from celery_worker.whisper_client import WhisperClient
+                        whisper_client = WhisperClient(api_key=settings.openai_api_key)
+                        transcript = whisper_client.transcribe_audio(local_file_path)
                     
                     # Clean up temp file if needed
-                    cleanup_func()
+                    if cleanup_func:
+                        cleanup_func()
                     
                     print(f"SUCCESS: Whisper transcription completed for job {job_id}")
+                    
+                    # Update progress for Gemini analysis
+                    jobs_db[job_id]["message"] = "Analyzing with Gemini..."
+                    jobs_db[job_id]["progress"] = 70
                     
                     # Then analyze with Gemini
                     print(f"BACKEND DEBUG: Starting Gemini analysis for job {job_id}")
@@ -593,9 +789,19 @@ Thank you, you've been a wonderful audience!
                     print(f"SUCCESS: Gemini analysis completed for job {job_id}")
                     
                 except Exception as e:
+                    import traceback
                     error_msg = f"Whisper + Gemini processing failed: {str(e)}"
-                    update_job_status(job_id, JobStatus.FAILED, error=error_msg)
                     print(f"ERROR: {error_msg}")
+                    print(f"Full traceback: {traceback.format_exc()}")
+                    
+                    # Ensure cleanup happens even on error
+                    if cleanup_func:
+                        try:
+                            cleanup_func()
+                        except Exception as cleanup_error:
+                            print(f"Cleanup error: {cleanup_error}")
+                    
+                    update_job_status(job_id, JobStatus.FAILED, error=error_msg)
                     return
                     
             elif model == TranscriptionModel.GEMINI_ANALYSIS:
@@ -606,22 +812,82 @@ Thank you, you've been a wonderful audience!
                 return
             
             # Update with success
-            jobs_db[job_id].update({
-                "status": JobStatus.COMPLETED,
-                "result": transcript,
-                "analysis": analysis,
-                "completed_at": datetime.datetime.now().isoformat()
-            })
-            print(f"SUCCESS: Job {job_id} completed successfully")
+            if job_id in jobs_db:
+                jobs_db[job_id].update({
+                    "status": JobStatus.COMPLETED,
+                    "result": transcript,
+                    "analysis": analysis,
+                    "progress": 100,
+                    "message": "Processing complete",
+                    "completed_at": datetime.datetime.now().isoformat(),
+                    "updated_at": datetime.datetime.now().isoformat()
+                })
+                print(f"SUCCESS: Job {job_id} completed successfully")
+            else:
+                print(f"WARNING: Job {job_id} not found in jobs_db during completion")
                 
         except Exception as e:
+            import traceback
             error_msg = f"Processing failed: {str(e)}"
-            update_job_status(job_id, JobStatus.FAILED, error=error_msg)
             print(f"ERROR: Processing failed for job {job_id}: {error_msg}")
+            print(f"Full traceback: {traceback.format_exc()}")
+            
+            # Ensure cleanup happens even on unexpected errors
+            if cleanup_func:
+                try:
+                    cleanup_func()
+                except Exception as cleanup_error:
+                    print(f"Final cleanup error: {cleanup_error}")
+            
+            # Always update job status to failed
+            try:
+                if job_id in jobs_db:
+                    jobs_db[job_id].update({
+                        "status": JobStatus.FAILED,
+                        "error": error_msg,
+                        "message": f"Processing failed: {error_msg}",
+                        "completed_at": datetime.datetime.now().isoformat(),
+                        "updated_at": datetime.datetime.now().isoformat()
+                    })
+                else:
+                    print(f"WARNING: Job {job_id} not found in jobs_db during error handling")
+            except Exception as status_error:
+                print(f"Failed to update job status: {status_error}")
     
-    # Run transcription in background thread
-    thread = threading.Thread(target=transcribe, daemon=True)
+    # Run transcription in background thread with timeout protection
+    def run_with_timeout():
+        timeout_seconds = 300  # 5 minutes timeout for local processing
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(transcribe)
+            try:
+                future.result(timeout=timeout_seconds)
+            except TimeoutError:
+                error_msg = f"Processing timed out after {timeout_seconds} seconds"
+                print(f"ERROR: {error_msg}")
+                if job_id in jobs_db:
+                    jobs_db[job_id].update({
+                        "status": JobStatus.FAILED,
+                        "error": error_msg,
+                        "message": "Processing timed out",
+                        "completed_at": datetime.datetime.now().isoformat(),
+                        "updated_at": datetime.datetime.now().isoformat()
+                    })
+            except Exception as e:
+                error_msg = f"Thread execution failed: {str(e)}"
+                print(f"ERROR: {error_msg}")
+                if job_id in jobs_db:
+                    jobs_db[job_id].update({
+                        "status": JobStatus.FAILED,
+                        "error": error_msg,
+                        "message": "Thread execution failed",
+                        "completed_at": datetime.datetime.now().isoformat(),
+                        "updated_at": datetime.datetime.now().isoformat()
+                    })
+    
+    # Start the timeout-protected thread
+    thread = threading.Thread(target=run_with_timeout, daemon=True)
     thread.start()
+    print(f"Started processing job {job_id} with 5-minute timeout protection")
 
 if __name__ == "__main__":
     import uvicorn

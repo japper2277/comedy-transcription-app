@@ -1,0 +1,180 @@
+PRD EXECUTION: COMPREHENSIVE FAILURE SCENARIO ANALYSIS
+=======================================================
+Last Updated: 2025-09-05
+Objective: Drive failure probability to ZERO for each scenario
+
+=== TIER 1: DEPLOYMENT BLOCKERS (System Won't Start) ===
+
+Scenario 1: Deployment Failure
+- Original Risk: gcloud CLI missing → deploy.sh fails immediately
+- Current Protection: PRE-0.1 "Install & Configure gcloud CLI"
+- Gap: No verification that authentication works with correct project
+- Zero-Failure Fix: [PRE-0.1b] Verify GCP Access: Run `gcloud projects describe comedy-feedback` to confirm authentication and project access
+
+Scenario 2: Silent Wrong Environment
+- Original Risk: Project ID mismatch → resources created in wrong GCP project
+- Current Protection: PRE-0.3 "Fix Project ID Consistency"  
+- Gap: Doesn't specify HOW to ensure consistency or verify it worked
+- Zero-Failure Fix: [PRE-0.3b] Verify Project Alignment: Confirm GOOGLE_CLOUD_PROJECT in .env matches gcloud config get-value project
+
+Scenario 6: API Key Deployment Failure
+- Risk: PRE-0.2 replaces keys locally, but they don't get deployed to Cloud Run
+- Gap: Keys set in .env but not in Cloud Run environment variables
+- Zero-Failure Fix: [PRE-0.7] Verify API Key Deployment: Confirm OpenAI/Gemini keys are set in Cloud Run environment variables, not just local .env
+
+Scenario 7: Worker Deployment Failure  
+- Risk: Main service deploys but workers fail, causing all jobs to hang
+- Gap: No verification that worker service is running
+- Zero-Failure Fix: [PRE-0.8] Verify Worker Deployment: Confirm both main service AND worker service are running before load test
+
+Scenario 8: File Upload Storage Failure
+- Risk: GCS bucket creation fails but deployment "succeeds"
+- Gap: No verification that file storage is accessible
+- Zero-Failure Fix: [PRE-0.9] Verify Storage Access: Test file upload to GCS bucket before load test
+
+=== TIER 2: DATA INTEGRITY FAILURES (Wrong Results) ===
+
+Scenario 3: Load Test Against Localhost
+- Original Risk: performance_test.py defaults to localhost, team thinks they're testing production
+- Current Protection: PRE-0.4 "Update Performance Test Target"
+- Gap: How do we know the Cloud Run URL before deployment?
+- Zero-Failure Fix: [PRE-0.4b] Capture Deployment URL: Extract Cloud Run service URL from deploy.sh output and verify performance_test.py targets it
+
+Scenario 4: Redis Connection Cascade (CRITICAL)
+- Original Risk: Backend can't connect to Cloud Redis, all job storage fails
+- Current Protection: Nothing directly addresses this
+- Gap: Deploy script creates Redis but doesn't update backend config
+- Zero-Failure Fix: [PRE-0.6] Verify Redis Configuration: Ensure deploy.sh updates REDIS_URL environment variable to point to Cloud Redis instance, not localhost
+- Additional Fix: [PRE-0.6b] Test Redis Connection: Verify deployed service can connect to Cloud Redis before proceeding to load test
+
+=== TIER 3: PERFORMANCE DISTORTION (Misleading Data) ===
+
+Scenario 5: Cold Start Amplification
+- Original Risk: 100 concurrent requests hit min-instances=0, cold start delays multiply
+- Current Protection: PRE-0.5 "set min-instances=2"
+- Gap: How do we verify the instances are actually warmed up?
+- Zero-Failure Fix: [PRE-0.5b] Verify Instance Warmup: Confirm at least 2 instances are running before starting load test
+
+=== TIER 4: RUNTIME EDGE CASES (Discovered During Analysis) ===
+
+Scenario 9: Network Timeout Cascade
+- Risk: Performance test times out waiting for responses, but unclear if it's the service or network
+- Root Cause: Default timeout in performance_test.py is 600s, but Cloud Run has 60-minute request timeout
+- Failure Mode: Test appears to "hang" with no clear failure reason
+- Zero-Failure Fix: [PRE-0.10] Configure Timeout Strategy: Set graduated timeouts (5s connect, 30s request, 300s job completion) in performance_test.py
+
+Scenario 10: Concurrent Upload File Handle Exhaustion
+- Risk: 100 concurrent file uploads exhaust file handles on Cloud Run instances
+- Root Cause: Each upload creates temporary files, may not clean up fast enough
+- Zero-Failure Fix: [PRE-0.11] Verify File Cleanup: Ensure temporary file cleanup in upload handler works under concurrent load
+
+Scenario 11: OpenAI Rate Limit Hit (CRITICAL)
+- Risk: 100 concurrent transcription requests hit OpenAI rate limits, causing cascade failures  
+- Root Cause: New OpenAI accounts have low rate limits (3 RPM for new users)
+- Zero-Failure Fix: [PRE-0.12] Verify OpenAI Rate Limits: Check account tier and rate limits before attempting 100 concurrent requests
+
+Scenario 12: Gemini API Quota Exhaustion
+- Risk: Gemini API has daily/hourly quotas that could be exceeded during load test
+- Zero-Failure Fix: [PRE-0.13] Verify Gemini Quotas: Confirm API quotas can handle expected load test volume
+
+=== TIER 5: MONITORING & OBSERVABILITY GAPS ===
+
+Scenario 13: Silent Job Queue Backup
+- Risk: Jobs queue up but workers aren't processing them, no visibility into queue depth
+- Root Cause: No monitoring of Celery queue or worker status  
+- Zero-Failure Fix: [PRE-0.14] Queue Health Check: Verify worker processes are consuming jobs from Redis queue before load test
+
+Scenario 14: Memory Exhaustion Death Spiral
+- Risk: 2GB memory limit hit during concurrent processing, instances restart, lose job state
+- Root Cause: Large audio files + concurrent processing could exceed memory
+- Zero-Failure Fix: [PRE-0.15] Memory Stress Test: Upload single large file (20MB+) to verify memory handling before concurrent test
+
+Scenario 15: Cost Runaway (Business Risk)
+- Risk: Load test generates massive unexpected costs, especially if it fails and keeps retrying
+- Zero-Failure Fix: [PRE-0.16] Cost Monitoring Setup: Set billing alerts and spending caps before starting load test
+
+=== TIER 6: DATA CORRUPTION SCENARIOS ===
+
+Scenario 16: Job State Desync
+- Risk: Redis job state gets out of sync with actual processing, results appear lost
+- Root Cause: Worker updates job state but Redis connection fails partway through
+- Zero-Failure Fix: [PRE-0.17] Job State Consistency Test: Verify job state updates are atomic and recoverable
+
+Scenario 17: File Corruption During Upload
+- Risk: Concurrent uploads corrupt each other's files in GCS
+- Zero-Failure Fix: [PRE-0.18] File Integrity Test: Upload test file, download it back, verify checksums match
+
+=== TIER 7: SECURITY & ACCESS FAILURES ===
+
+Scenario 18: IAM Permission Explosion  
+- Risk: Service account lacks permissions for specific GCP resources, fails silently
+- Root Cause: deploy.sh creates resources but doesn't verify service account has access to all of them
+- Zero-Failure Fix: [PRE-0.19] IAM Permission Audit: Verify service account has all required permissions (GCS, Redis, Cloud Run) before deployment
+
+Scenario 19: API Key Exposure in Logs
+- Risk: API keys get logged in Cloud Run logs during debugging  
+- Zero-Failure Fix: [PRE-0.20] Log Security Check: Verify API keys are not exposed in application logs or Cloud Run startup logs
+
+=== TIER 8: DEPENDENCY FAILURES ===
+
+Scenario 20: Python Package Version Conflict
+- Risk: Cloud Run uses different Python packages than local development, causes import failures
+- Zero-Failure Fix: [PRE-0.21] Dependency Verification: Test import of all critical packages (openai, google-generativeai, celery) on deployed service
+
+Scenario 21: Docker Build Cache Staleness
+- Risk: Old cached Docker layers cause deployment to use stale code  
+- Zero-Failure Fix: [PRE-0.22] Force Clean Build: Use --no-cache flag in Docker builds to ensure fresh deployment
+
+=== COMPREHENSIVE SUMMARY ===
+
+TOTAL FAILURE SCENARIOS IDENTIFIED: 21
+CRITICAL TIER 1 BLOCKERS: 5 scenarios
+HIGH-IMPACT DATA INTEGRITY: 3 scenarios  
+PERFORMANCE DISTORTION: 1 scenario
+RUNTIME EDGE CASES: 4 scenarios
+MONITORING GAPS: 3 scenarios
+DATA CORRUPTION: 2 scenarios
+SECURITY FAILURES: 2 scenarios
+DEPENDENCY ISSUES: 2 scenarios
+
+PHASE 0 EXPANSION REQUIRED: 22 verification steps (PRE-0.1 through PRE-0.22)
+ESTIMATED PHASE 0 TIME: 30-45 minutes (3x original estimate)
+
+CRITICAL OBSERVATION: Original 15-minute Phase 0 is insufficient for zero-failure execution.
+
+=== TIER 9: NETWORK & INFRASTRUCTURE EDGE CASES ===
+
+Scenario 22: GCP Region Outage During Execution
+- Risk: us-central1 region has issues during the 4-hour window (Low Probability, High Impact)
+- Zero-Failure Fix: [PRE-0.23] Region Health Check: Verify GCP region status before deployment
+
+Scenario 23: DNS Propagation Delay  
+- Risk: Cloud Run service deploys but URL takes 5-10 minutes to become accessible
+- Zero-Failure Fix: [PRE-0.24] DNS Propagation Wait: Add 2-minute wait + health check after deployment before declaring success
+
+=== TIER 10: HUMAN ERROR & PROCESS FAILURES ===
+
+Scenario 24: Wrong Performance Test Configuration
+- Risk: Team runs performance_test.py with wrong parameters (10 instead of 100, wrong model, etc.)
+- Zero-Failure Fix: [PRE-0.25] Test Configuration Verification: Display and confirm all performance test parameters before execution
+
+Scenario 25: Premature Test Execution
+- Risk: Someone starts the load test before all services are fully warmed up
+- Zero-Failure Fix: [PRE-0.26] Execution Gate: Require explicit "GO" confirmation after all pre-flight checks pass
+
+=== FINAL COMPREHENSIVE SUMMARY ===
+
+TOTAL FAILURE SCENARIOS IDENTIFIED: 25
+CRITICAL TIER 1-3 SCENARIOS: 8 (cover 85-90% of failure probability)
+EDGE CASE SCENARIOS (TIER 4-10): 17 (cover remaining 10-15% but with diminishing returns)
+
+PHASE 0 EXPANSION OPTIONS:
+- MINIMAL (Original PRD): 5 steps, 15 minutes, ~80% success rate
+- OPTIMAL (Tier 1-3): 12 steps, 15-20 minutes, ~90% success rate  
+- MAXIMAL (All Tiers): 26 steps, 45 minutes, ~98% success rate
+
+RECOMMENDATION: Focus on OPTIMAL approach (Tier 1-3 scenarios only).
+The original PRD Phase 0 scope was well-calibrated for risk/time tradeoff.
+
+FINAL INSIGHT: This document serves as comprehensive reference for "what could go wrong" 
+while PRD execution focuses on highest-impact items only.

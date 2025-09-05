@@ -33,12 +33,19 @@ gcloud redis instances create $REDIS_INSTANCE_NAME \
 REDIS_IP=$(gcloud redis instances describe $REDIS_INSTANCE_NAME --region=$REGION --format="get(host)" --project=$PROJECT_ID)
 REDIS_URL="redis://$REDIS_IP:6379/0"
 
+# Load API keys from .env file
+if [ -f .env ]; then
+    export $(grep -E "^(OPENAI_API_KEY|GEMINI_API_KEY)=" .env | xargs)
+fi
+
 echo "Redis URL: $REDIS_URL"
+echo "API Keys loaded from .env"
 
 # Step 3: Build and deploy to Cloud Run
 echo "🏗️ Building and deploying to Cloud Run"
 gcloud run deploy $SERVICE_NAME \
     --source . \
+    --use-cloud-build \
     --region=$REGION \
     --platform=managed \
     --allow-unauthenticated \
@@ -46,11 +53,13 @@ gcloud run deploy $SERVICE_NAME \
     --memory=2Gi \
     --cpu=1 \
     --max-instances=10 \
-    --min-instances=0 \
+    --min-instances=2 \
     --set-env-vars="ENVIRONMENT=production" \
     --set-env-vars="GCS_BUCKET_NAME=$GCS_BUCKET_NAME" \
     --set-env-vars="GOOGLE_CLOUD_PROJECT=$PROJECT_ID" \
     --set-env-vars="REDIS_URL=$REDIS_URL" \
+    --set-env-vars="OPENAI_API_KEY=$OPENAI_API_KEY" \
+    --set-env-vars="GEMINI_API_KEY=$GEMINI_API_KEY" \
     --project=$PROJECT_ID
 
 # Get service URL
@@ -67,8 +76,7 @@ curl -s "$SERVICE_URL/health" | grep -q "healthy" && echo "✅ Health check pass
 
 echo ""
 echo "🎯 Next steps:"
-echo "1. Set up environment variables for API keys:"
-echo "   gcloud run services update $SERVICE_NAME --region=$REGION --set-env-vars=\"OPENAI_API_KEY=your-key-here,GEMINI_API_KEY=your-key-here\""
-echo "2. Deploy Celery workers (separate Cloud Run service or GKE)"
+echo "1. Deploy Celery workers: ./deploy-worker.sh"
+echo "2. Run performance test: python performance_test.py $SERVICE_URL"
 echo "3. Configure domain and SSL certificate"
 echo "4. Set up monitoring and logging"

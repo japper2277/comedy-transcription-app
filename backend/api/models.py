@@ -13,6 +13,11 @@ class TranscriptionModel(str, Enum):
     GEMINI_ANALYSIS = "gemini-analysis"
     WHISPER_PLUS_GEMINI = "whisper-plus-gemini"
 
+class AnalysisResponse(BaseModel):
+    success: bool
+    analysis: Optional[str] = None
+    error: Optional[str] = None
+
 class TranscriptionJobResponse(BaseModel):
     job_id: str
     status: JobStatus
@@ -22,7 +27,7 @@ class JobStatusResponse(BaseModel):
     job_id: str
     status: JobStatus
     result: Optional[str] = None
-    analysis: Optional[dict] = None
+    analysis: Optional[AnalysisResponse] = None
     error: Optional[str] = None
     created_at: str
     completed_at: Optional[str] = None

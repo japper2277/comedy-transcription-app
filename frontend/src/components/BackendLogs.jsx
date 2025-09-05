@@ -26,9 +26,9 @@ const BackendLogs = () => {
         arg.includes('BACKEND') || 
         arg.includes('GEMINI') || 
         arg.includes('WHISPER') ||
-        arg.includes('🔌') ||
-        arg.includes('✅') ||
-        arg.includes('❌')
+        arg.includes('CONNECTED') ||
+        arg.includes('SUCCESS') ||
+        arg.includes('ERROR')
       ))) {
         addLog('info', args.join(' '));
       }

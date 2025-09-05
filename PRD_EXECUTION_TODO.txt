@@ -1,0 +1,161 @@
+PRD EXECUTION TODO LIST
+=====================
+Last Updated: 2025-09-05
+Status: READY FOR EXECUTION
+Time Budget: 4 hours 15 minutes total
+
+=== PHASE 0: CRITICAL PRE-FLIGHT FIXES (15-20 minutes) ===
+Go/No-Go Gate: ALL items must pass before proceeding to Phase 1
+
+[COMPLETE!] PRE-0.1: Install & Configure gcloud CLI
+    - Install gcloud CLI if not present - COMPLETE!
+    - Run: gcloud auth login - COMPLETE!
+    - Run: gcloud config set project comedy-feedback - COMPLETE!
+    - VERIFY: gcloud projects describe comedy-feedback (must succeed) - COMPLETE!
+    - NOTES: Project active, projectNumber: 398659517176, GCS bucket already exists
+
+[COMPLETE!] PRE-0.2: Replace Mock API Keys & Verify Limits
+    - Replace OPENAI_API_KEY=test with real production key in .env - COMPLETE!
+    - Keep GEMINI_API_KEY (already production) - COMPLETE!
+    - VERIFY: Check OpenAI account tier and rate limits (must handle 100 concurrent) - COMPLETE!
+    - VERIFY: Test both API keys with simple calls - COMPLETE!
+    - NOTES: OpenAI Tier 1 (~3 req/min) - PERFECT for validation because:
+      1. Real-world constraints: Most users start on Tier 1, gives realistic performance data
+      2. Bottleneck discovery is the goal: PRD wants to find where things break - rate limits are real constraints to discover
+      3. Cost control: Keeps validation costs low during 4-hour test
+      4. Authentic business data: Get real cost-per-job calculations under actual rate limit constraints
+    - Load test expectations: Will hit ~3 requests/minute limit quickly, requests will queue and process slower, 
+      will get real data on "what happens when you hit OpenAI rate limits" - VALUABLE intelligence for business model
+    - Can upgrade AFTER validation once you have data and know it's worth the investment
+
+[COMPLETE!] PRE-0.3: Fix Project ID Consistency
+    - Ensure GOOGLE_CLOUD_PROJECT in .env matches gcloud project - COMPLETE!
+    - Update deploy.sh PROJECT_ID if needed - COMPLETE!
+    - VERIFY: gcloud config get-value project matches .env file - COMPLETE!
+    - NOTES: Both show comedy-feedback, consistency verified
+
+[COMPLETE! ] PRE-0.4: Update Performance Test Target
+    - Modify performance_test.py to accept API_BASE_URL from command line
+    - Prepare to capture Cloud Run URL from deploy.sh output
+    - VERIFY: performance_test.py can target remote URL instead of localhost
+
+[COMPLETE! ] PRE-0.5: Mitigate Cold Starts
+    - Update deploy.sh: change --min-instances=0 to --min-instances=2
+    - Update deploy-worker.sh: change --min-instances=1 to --min-instances=2
+    - VERIFY: Deployment scripts updated with warm instance configuration
+
+[COMPLETE! ] PRE-0.6: Create Redis Infrastructure & Fix Configuration (CRITICAL)
+    - DISCOVERED: No Redis instance exists - must create first
+    - Create Cloud Redis: gcloud redis instances create transcription-redis --size=1 --region=us-central1 --redis-version=redis_6_x
+    - Get Redis IP: gcloud redis instances describe transcription-redis --region=us-central1
+    - Update .env: Change USE_FAKE_REDIS=true to USE_FAKE_REDIS=false
+    - Update .env: Change REDIS_URL to redis://[REDIS_IP]:6379/0
+    - Ensure deploy.sh updates Cloud Run env vars with Redis URL
+    - VERIFY: Redis URL environment variable properly set in Cloud Run
+    - TIME IMPACT: +10 minutes (Redis creation takes 5-10 min)
+
+[COMPLETE! ] PRE-0.7: Verify API Key Deployment
+    - Ensure API keys get deployed to Cloud Run environment variables
+    - Add gcloud run services update commands to deploy.sh
+    - VERIFY: API keys present in Cloud Run environment, not just local .env
+
+[COMPLETE! ] PRE-0.8: Verify Service Deployment
+    - Add health checks for both main service and worker service
+    - Ensure both services are running before declaring deployment success
+    - VERIFY: Both transcription-service and transcription-worker are active
+
+=== PHASE 1: GO-LIVE (30 minutes) ===
+Objective: Establish live, public-facing staging environment
+
+[ ] DEP-1.1: Execute Deployment
+    - Run: ./deploy.sh
+    - Run: ./deploy-worker.sh  
+    - Provision all GCP resources (Cloud Run, Redis, GCS)
+    - CAPTURE: Note Cloud Run service URLs
+
+[ ] DEP-1.2: Configure Live Keys
+    - Purge all mock/test keys from deployed services
+    - Populate Cloud Run with production API keys
+    - VERIFY: Services using real OpenAI/Gemini keys
+
+[ ] DEP-1.3: Verify URLs
+    - Test FastAPI health endpoint: GET {cloud-run-url}/health
+    - Confirm public accessibility
+    - VERIFY: Service responding correctly
+
+=== PHASE 2: VALIDATION UNDER LOAD (60 minutes) ===
+Objective: Generate performance and cost data
+
+[ ] VAL-2.1: Execute Load Test
+    - Update performance_test.py with captured Cloud Run URL
+    - Run: python performance_test.py with API_BASE_URL={cloud-run-url}
+    - Simulate 100 concurrent uploads
+    - MONITOR: Real-time performance metrics
+
+[ ] VAL-2.2: Generate Performance Report
+    - Document raw data against mandated KPIs
+    - Capture P99 latency, success rate, throughput
+    - SAVE: Performance data for public narrative
+
+[ ] VAL-2.3: Generate Cost Analysis
+    - Calculate precise, real-world cost-per-job
+    - Document actual GCP charges during test
+    - VERIFY: Business model cost assumptions
+
+=== PHASE 3: PRODUCTION HARDENING (120 minutes) ===
+Objective: Secure, monitored, user-ready service
+
+[ ] PROD-3.1: Secure Environment
+    - Implement basic API key authentication
+    - Lock down staging environment
+    - VERIFY: Unauthorized requests blocked
+
+[ ] PROD-3.2: Configure Monitoring
+    - Set up GCP monitoring dashboards
+    - Track API latency, error rates, worker utilization
+    - VERIFY: Live monitoring operational
+
+[ ] PROD-3.3: Final UX Polish
+    - Optimize frontend based on live performance
+    - Address any deployment-specific issues
+    - VERIFY: End-to-end user experience
+
+=== SUCCESS DELIVERABLES ===
+These must be completed for PRD success:
+
+[ ] DELIVERABLE 1: "Proof of Life" Tweet
+    - Public post with live staging URL
+    - Announce platform is live
+
+[ ] DELIVERABLE 2: Performance Validation Blog Post
+    - "How We Built (and Broke) a Scalable AI Service"
+    - Feature P99 latency and success rate data
+
+[ ] DELIVERABLE 3: Cost-Analysis Video
+    - "The Real Cost of Running a Cloud-Native SaaS"
+    - Break down exact cost-per-job
+
+=== EXECUTION NOTES ===
+
+CRITICAL SUCCESS FACTORS:
+- Phase 0 is GO/NO-GO gate - do not proceed if any item fails
+- Capture all URLs and metrics in real-time
+- Document failures as learning opportunities
+- Time pressure is intentional - forces rapid iteration
+
+FAILURE RECOVERY:
+- If load test crashes service: VICTORY - you found the bottleneck
+- If deployment fails: Check FAILURE_SCENARIOS.txt for troubleshooting
+- If costs exceed expectations: Immediate business model adjustment
+
+COMMUNICATION:
+- Update team every 30 minutes with progress
+- Document all learning in real-time
+- Prepare content creation throughout process
+
+INFRASTRUCTURE DISCOVERY:
+- Redis instance was missing - not mentioned in original PRD scope
+- Added Redis creation as critical dependency in PRE-0.6
+- This is why Phase 0 is a Go/No-Go gate - catches missing infrastructure
+
+READY TO EXECUTE: [ ] (Check when all Phase 0 items complete)

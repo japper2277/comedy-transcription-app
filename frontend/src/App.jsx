@@ -19,6 +19,13 @@ function App() {
       } catch (error) {
         setHealthStatus('error');
         console.error('API health check failed:', error);
+        
+        // Show helpful error message for common issues
+        if (error.message.includes('ECONNREFUSED')) {
+          console.error('💡 TIP: Make sure the backend is running on http://localhost:8000');
+        } else if (error.message.includes('CORS')) {
+          console.error('💡 TIP: CORS issue - try refreshing the page or restarting the backend');
+        }
       }
     };
 

@@ -31,7 +31,7 @@ const JobStatus = ({ job, onJobUpdate }) => {
       const result = await transcriptionAPI.runGeminiAnalysis(job.job_id, setList, customPrompt);
       
       // Update the job with analysis results
-      const updatedJob = { ...job, analysis: result };
+      const updatedJob = { ...job, analysis: result.analysis };
       if (onJobUpdate) {
         onJobUpdate(updatedJob);
       }
@@ -175,13 +175,21 @@ const JobStatus = ({ job, onJobUpdate }) => {
       {job.status === 'completed' && job.analysis && (
         <div className="job-analysis">
           <strong>Comedy Analysis (Gemini Flash 2.0):</strong>
-          {job.analysis.success ? (
-            <div className="analysis-content">
-              <pre className="analysis-text">{job.analysis.analysis}</pre>
-            </div>
+          {/* Handle both new format (object) and old format (string) for backward compatibility */}
+          {typeof job.analysis === 'object' ? (
+            job.analysis.success ? (
+              <div className="analysis-content">
+                <pre className="analysis-text">{job.analysis.analysis}</pre>
+              </div>
+            ) : (
+              <div className="analysis-error" style={{ color: '#ef4444' }}>
+                Analysis failed: {job.analysis.error}
+              </div>
+            )
           ) : (
-            <div className="analysis-error" style={{ color: '#ef4444' }}>
-              Analysis failed: {job.analysis.error}
+            /* Old format - treat as successful analysis */
+            <div className="analysis-content">
+              <pre className="analysis-text">{job.analysis}</pre>
             </div>
           )}
         </div>

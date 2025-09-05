@@ -22,7 +22,12 @@ const JobList = ({ newJob, refreshTrigger }) => {
       const updatedJob = await transcriptionAPI.getJobStatus(jobId);
       setJobs(prevJobs => 
         prevJobs.map(job => 
-          job.job_id === jobId ? { ...job, ...updatedJob } : job
+          job.job_id === jobId ? { 
+            ...job, 
+            ...updatedJob,
+            // Preserve analysis structure if it exists
+            analysis: updatedJob.analysis || job.analysis
+          } : job
         )
       );
     } catch (error) {
